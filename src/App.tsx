@@ -535,10 +535,8 @@ export default function App() {
       {cloudStt.active && (
         <CloudRecordingPanel
           t={t}
-          locale={locale}
           feedback={cloudFeedback}
           onConsent={startCloudCapture}
-          onStart={() => {}}
           onStop={() => cloudRecordingRef.current?.stop()}
           onSend={() => void sendCloudRecording()}
           onDiscard={cancelCloudSession}
