@@ -1,5 +1,7 @@
 import { money } from '../locales'
 import type { Locale } from '../locales'
+import { fetchBalanceAudio, playAudioUrl } from './cloudTts'
+import type { BalanceType } from './cloudTts'
 
 export type PlaybackResult = 'spoken' | 'unavailable' | 'failed' | 'cancelled'
 
@@ -113,3 +115,71 @@ export const textToSpeech = createTextToSpeech(
   () => typeof SpeechSynthesisUtterance === 'undefined' ? undefined : window.speechSynthesis,
   text => new SpeechSynthesisUtterance(text),
 )
+
+// ---------------------------------------------------------------------------
+// Hybrid TTS: browser first, Bulbul cloud fallback
+// ---------------------------------------------------------------------------
+
+export type HybridPlayResult = PlaybackResult | 'cloud-spoken' | 'cloud-quota' | 'cloud-disabled' | 'cloud-failed'
+
+export interface BalancePlayRequest {
+  paise: number
+  balanceType: BalanceType
+}
+
+let cloudAbortController: AbortController | undefined
+
+export function cancelCloudTts() {
+  cloudAbortController?.abort()
+  cloudAbortController = undefined
+}
+
+/**
+ * Speak a wage balance in the given locale.
+ * 1. Try browser SpeechSynthesis.
+ * 2. If unavailable/failed and locale is hi-IN or ml-IN, try Bulbul via backend.
+ * 3. Cancel any in-flight cloud request when called again.
+ */
+export async function speakBalanceHybrid(
+  request: BalancePlayRequest,
+  locale: Locale,
+  spokenText: string,
+): Promise<HybridPlayResult> {
+  // Cancel any previous cloud TTS.
+  cancelCloudTts()
+
+  // 1. Browser TTS attempt.
+  const browserResult = await textToSpeech.speak(spokenText, locale)
+  if (browserResult === 'spoken' || browserResult === 'cancelled') return browserResult
+
+  // 2. Cloud fallback only for hi-IN / ml-IN.
+  if (locale !== 'hi-IN' && locale !== 'ml-IN') {
+    return browserResult === 'unavailable' ? 'unavailable' : 'failed'
+  }
+
+  // 3. Try Bulbul.
+  const controller = new AbortController()
+  cloudAbortController = controller
+
+  const cloudResult = await fetchBalanceAudio(
+    { locale, paise: request.paise, balanceType: request.balanceType },
+    controller.signal,
+  )
+
+  if (controller.signal.aborted) return 'cancelled'
+  cloudAbortController = undefined
+
+  if (cloudResult.status === 'error') {
+    const code = cloudResult.code
+    if (code === 'quota') return 'cloud-quota'
+    if (code === 'disabled') return 'cloud-disabled'
+    return 'cloud-failed'
+  }
+
+  // Play the returned audio blob URL.
+  const played = await playAudioUrl(cloudResult.url, controller.signal)
+  cloudResult.revoke()
+  if (played === 'spoken') return 'cloud-spoken'
+  if (played === 'cancelled') return 'cancelled'
+  return 'cloud-failed'
+}

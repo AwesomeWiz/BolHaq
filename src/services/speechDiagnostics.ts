@@ -3,7 +3,7 @@ import type { Locale } from '../locales'
 export type RecognitionAPI = 'standard' | 'webkit' | 'unavailable'
 export type SpeechPhase = 'starting' | 'listening' | 'processing' | 'finishing' | 'closed'
 
-type EventName = 'request' | 'start' | 'audiostart' | 'soundstart' | 'speechstart' | 'result' |
+type EventName = 'request' | 'start' | 'audiostart' | 'soundstart' | 'speechstart' | 'audioend' | 'speechend' | 'result' |
   'nomatch' | 'error' | 'end' | 'cancel' | 'timeout' | 'close'
 type TraceEntry = {
   event: EventName

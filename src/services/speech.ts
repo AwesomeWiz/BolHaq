@@ -3,7 +3,7 @@ import { recordSpeechEvent } from './speechDiagnostics'
 import type { RecognitionAPI, SpeechPhase } from './speechDiagnostics'
 
 export type SpeechIssue = 'unsupported' | 'denied' | 'timeout' | 'emptySpeech' | 'speechLanguage' |
-  'speechError' | 'speechInterrupted' | 'speechUnavailable' | 'speechCapture'
+  'speechError' | 'speechInterrupted' | 'speechUnavailable' | 'speechCapture' | 'speechServiceBlocked' | 'speechNoResult'
 
 type Result = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
 interface Recognition {
@@ -64,6 +64,7 @@ function browserIssue(code: string): SpeechIssue {
   }
 }
 
+const lateResultWindowMs = 200
 let lastSession = 0
 let cancelActive: (() => void) | undefined
 
@@ -77,6 +78,7 @@ export const speechToText: SpeechToTextProvider = {
     let session: Recognition | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
     let phase: SpeechPhase = 'starting'
+    let ended = false
 
     function report(event: Parameters<typeof recordSpeechEvent>[0]['event'],
       detail?: Partial<Pick<Parameters<typeof recordSpeechEvent>[0], 'transcriptReturned' | 'errorCode' | 'errorMessage'>>) {
@@ -115,6 +117,7 @@ export const speechToText: SpeechToTextProvider = {
     }
 
     function awaitEnd() {
+      if (ended) { close(false); return }
       const instance = session
       if (!instance) return
       phase = 'finishing'
@@ -136,6 +139,12 @@ export const speechToText: SpeechToTextProvider = {
       if (phase !== 'starting') return
       phase = 'listening'
       callbacks.started()
+    }
+
+    function captureEnded(event: 'audioend' | 'speechend') {
+      if (phase === 'closed' || phase === 'finishing') return
+      report(event)
+      processing()
     }
 
     function processing() {
@@ -179,8 +188,8 @@ export const speechToText: SpeechToTextProvider = {
       }
       session.onsoundend = () => { if (phase === 'listening') callbacks.sound(false) }
       session.onspeechstart = () => { if (phase !== 'closed' && phase !== 'finishing') report('speechstart') }
-      session.onspeechend = processing
-      session.onaudioend = processing
+      session.onspeechend = () => captureEnded('speechend')
+      session.onaudioend = () => captureEnded('audioend')
       session.onresult = event => {
         if (phase === 'closed' || phase === 'finishing') return
         let transcript = ''
@@ -207,16 +216,20 @@ export const speechToText: SpeechToTextProvider = {
         callbacks.failed('emptySpeech')
       }
       session.onend = () => {
-        if (phase === 'closed') return
+        if (phase === 'closed' || ended) return
+        ended = true
         report('end')
-        if (phase === 'finishing') close(false)
-        else fail('emptySpeech', false)
+        if (phase === 'finishing') { close(false); return }
+        // Keep handlers briefly for a final result or error queued around disconnection.
+        clearTimeout(timer)
+        processing()
+        timer = setTimeout(() => fail('speechNoResult', false), lateResultWindowMs)
       }
       session.onerror = ({ error, message }) => {
         if (phase === 'closed' || phase === 'finishing') return
         report('error', { errorCode: error, errorMessage: message?.slice(0, 240) })
         awaitEnd()
-        callbacks.failed(browserIssue(error))
+        callbacks.failed(locale === 'ml-IN' && error === 'service-not-allowed' ? 'speechServiceBlocked' : browserIssue(error))
       }
       timer = setTimeout(() => { report('timeout'); fail('timeout') }, 12_000)
       session.start()
