@@ -61,9 +61,13 @@ function spokenInteger(input: string): number | null {
   return multiplier && remainder !== null && remainder < unit ? multiplier * unit + remainder : null
 }
 
+const currencyWord = String.raw`(?:rupees?|rs\.?|inr|रुपये|रुपए|रुपया|रुपएँ|रुपएं|रुपयों|रुपे|(?:आई|आइ)\s*एन\s*आर|രൂപ)`
+const currencyPrefix = new RegExp(String.raw`^(?:₹\s*|${currencyWord}(?:\s*:\s*|\s+|(?=\d)))`, 'u')
+const currencySuffix = new RegExp(String.raw`(?:₹|രൂപ(?:യാണ്|ആണ്)?|(?<=[\s\d])${currencyWord})$`, 'u')
+
 function parseAmount(raw: string) {
-  const amount = raw.trim().replace(/^₹\s*/, '')
-    .replace(/\s*(?:rupees?|rs\.?|रुपये|रुपए|रुपया|रुपएँ|रुपएं|रुपयों|रुपे|രൂപ)(?:യാണ്|ആണ്)?$/u, '').trim()
+  // Strip currency at the edges only. The entire remainder must be one valid number.
+  const amount = raw.trim().replace(currencyPrefix, '').replace(currencySuffix, '').trim()
   const spelled = spokenInteger(amount)
   return readPaise(amount) ?? (spelled === null ? null : readPaise(String(spelled)))
 }
@@ -99,10 +103,14 @@ export const intentParser: VoiceIntentParser = {
       const rate = parseAmount(raw)
       return result({ intent: 'SET_DAILY_WAGE', parameters: { rate } }, rate === null ? ['rate'] : [], raw && rate === null ? 'number' : null)
     }
-    const payment = /^(?:(?:i )?received\s*(.*)|record payment\s*(.*)|എനിക്ക് (.*?)\s*(?:കിട്ടി|ലഭിച്ചു)|मुझे (.*?)\s*(?:मिले|मिला))$/u.exec(command)
+    const hindiPayment = /^मुझे(?:\s*[:,]\s*|\s+)(.*?)\s*(?:मिले|मिला)$/u.exec(command)
+    const payment = /^(?:(?:i )?received|record payment)(?=$|[\s:,₹])\s*[:,]?\s*(.*)$/u.exec(command) ??
+      /^എനിക്ക്(?:\s*[:,]\s*|\s+)(.*?)\s*(?:കിട്ടി|ലഭിച്ചു)$/u.exec(command) ?? hindiPayment
     if (payment) {
-      const raw = payment.slice(1).find(value => value !== undefined) ?? ''
-      const amount = parseAmount(raw)
+      const [, raw] = payment
+      // The Hindi recognizer can transcribe a currency prefix as आईएस.
+      // Accept it only in a payment phrase directly before a numeric amount.
+      const amount = parseAmount(hindiPayment ? raw.replace(/^आई\s*एस(?=\s+\d)/u, '₹') : raw)
       return result({ intent: 'RECORD_PAYMENT', parameters: { amount } }, amount === null ? ['amount'] : [], raw && amount === null ? 'number' : null)
     }
 

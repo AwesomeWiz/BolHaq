@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import '@fontsource-variable/inter'
+import '@fontsource-variable/manrope'
+import '@fontsource-variable/sora'
 import '@fontsource-variable/noto-sans-malayalam'
 import '@fontsource-variable/noto-sans-devanagari'
 import './styles/app.css'

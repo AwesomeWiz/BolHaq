@@ -32,9 +32,13 @@ The language selector controls labels, examples, feedback, formatting, the recog
 | Hindi | `hi-IN` | मुझे 2000 रुपये मिले। |
 | English | `en-IN` | I received 2000 rupees. |
 
-The deterministic parser handles the built-in examples, Arabic/Malayalam/Devanagari digits, common number words and selected mixed-language commands such as “ഇന്ന് work ചെയ്തു.” Open **What can I say?** for examples in the active language. Incomplete or ambiguous commands open an editable form when the action can be identified. Check the recognized transcript and all values before confirming.
+The deterministic parser handles the built-in examples, Arabic/Malayalam/Devanagari digits, common number words and selected mixed-language commands such as “ഇന്ന് work ചെയ്തു.” Open **What can I say?** for examples in the active language. Complete commands open a confirmation sheet with the recognized values already filled in. Edit the amount or workday count directly, or use **Edit details** for the date. An incomplete command keeps the recognized values and focuses the missing field.
 
 Recognition and playback use the browser’s Web Speech API. Support depends on the browser, microphone permission, available voices, language services and connectivity. Some browsers send microphone audio to their recognition service. BolHaq stores ledger entries in IndexedDB and does not store microphone audio or transcripts. The typed command field and quick actions remain available if speech recognition fails. Playback uses a matching language voice when one is available. [Web Speech API documentation](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API/Using_the_Web_Speech_API)
+
+The timer starts when the recognition session starts listening. The coral waveform moves when that same session reports sound and rests during silence. It indicates sound activity and does not measure amplitude or open a second microphone stream. When sound events are unavailable, the listening indicator and timer still show the session state.
+
+For Malayalam playback, BolHaq primes the voice list and waits briefly for late-loaded voices. It prefers `ml-IN` and can use another Malayalam-tagged voice. The utterance uses `ml-IN` and says amounts with Malayalam currency words, such as “2200 രൂപ”. If a compatible voice is missing or playback fails, the written balance stays visible and BolHaq explains the issue in Malayalam. On-device pronunciation still needs verification. [Browser voice loading](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis/voiceschanged_event)
 
 ## Development
 
@@ -71,15 +75,15 @@ The [Verify BolHaq workflow](.github/workflows/verify.yml) runs on GitHub-hosted
 
 | Area | Implementation |
 | --- | --- |
-| UI | React, TypeScript, Vite, Tailwind CSS and self-hosted Inter and Noto fonts |
+| UI | React, TypeScript, Vite, Tailwind CSS and self-hosted Sora, Manrope and Noto fonts |
 | `src/domain/` | Money and date validation, wage calculations, confirmation-gated writes and multilingual parsing |
 | `src/services/` | Browser speech adapters and IndexedDB storage through idb |
 | `src/features/proposals.ts` | Converts parsed commands and form drafts into validated, reviewable proposals |
 | `src/locales/` | English, Malayalam and Hindi strings, examples and formatters |
 | `src/components/` and `src/styles/` | Mobile-first app shell, voice controls, ledger cards and accessible confirmation dialogs |
-| `src/tests/` | Vitest unit tests and an IndexedDB integration test using fake-indexeddb |
+| `src/tests/` | Vitest tests for the ledger, parser, IndexedDB, recording and confirmation UI, and voice selection |
 
-The interface uses KhataJi’s teal accent, warm worksite surface and compact spacing. Wispr Flow informs the flat panels, whitespace and prominence of the microphone. [KhataJi design reference](references/KhataJi-DESIGN.md) · [Wispr Flow design reference](references/wisprflow.ai-DESIGN.md)
+The interface pairs Cobalt controls with Midnight Ink typography and a dark recording surface. Coral indicates active recording, and Receipt Green marks payments received. Sora is used for display numbers and English headings, Manrope for English body text and controls, and Noto Sans Malayalam and Noto Sans Devanagari for regional scripts. [KhataJi design reference](references/KhataJi-DESIGN.md) · [Wispr Flow design reference](references/wisprflow.ai-DESIGN.md)
 
 Guest data is specific to this browser profile, device and origin. Development and Docker use different ports, so each has its own ledger. Clearing site storage, ending a private browsing session or losing the device can remove the data. Money is stored as integer paise. Confirmed work stores its wage rate, and the app calculates balances from saved work and payments. A new backdated work entry uses the current agreement shown in its review. Correcting a saved work entry keeps that entry’s original rate.
 
@@ -87,17 +91,17 @@ Guest data is specific to this browser profile, device and origin. Development a
 
 1. Open BolHaq in Chrome on an Android phone using an HTTPS origin. Record the Android/browser versions and network status.
 2. Check the 360–430px layout. Verify script rendering, large touch targets and visible focus with the software keyboard open.
-3. Select Malayalam, Hindi and English in turn. For each language, create or select a worksite and speak each example aloud. Compare the transcript and proposals with the expected action, employer, date and amount.
+3. Select Malayalam, Hindi and English in turn. For each language, create or select a worksite and speak each example aloud. Check that the timer advances while listening, the waveform reacts when sound events are available, and the transcript and prefilled values match the command.
 4. Confirm one write, edit one misheard value and cancel another. Refresh and verify that only confirmed entries persist. Retry a same-date work entry and review its correction.
 5. Try silence, a denied microphone, an ambiguous amount and an unsupported browser. Verify the correct feedback and complete the same journey with typed commands or forms.
-6. Test speaking a balance using an available matching voice. Try a device without one and verify the on-screen balance still appears.
+6. Try Malayalam read-aloud with ₹700, ₹2,000, ₹2,200 and ₹4,200. Record the installed voice and whether it pronounces the amount correctly. Try a device without a Malayalam voice and verify the localized message and written balance.
 
 Automated tests exercise the parser and ledger independently of a real microphone. Record device speech results separately.
 
 ## Known limitations and TASK-002
 
-- Recognition and playback depend on the browser and OS. Malayalam, Hindi and mixed-language recognition need real-device testing.
+- Recognition and playback depend on the browser and OS. Verify the updated recording controls and Malayalam pronunciation on the devices used for the demo.
 - The parser supports a finite set of commands and number phrases. Worksite naming through speech also depends on how the browser transcribes the name.
 - A multi-day work entry stores a count under one reporting date. The duplicate rule applies to the reporting date per worksite.
 - The local guest ledger has no synchronization or backup. Repeated payments on the same date are allowed because separate instalments can occur.
-- For TASK-002, prioritize Android speech trials in all three languages, expand number and command coverage from those trials, and add ledger export and restore.
+- For follow-up work, use Android speech trials to expand number and command coverage, and add ledger export and restore.

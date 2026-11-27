@@ -1,10 +1,29 @@
 import { currentAgreement, LedgerError, localDate, normalizeDigits, readPaise, validateProposal, workOn } from '../domain/ledger'
 import type { Ledger, Proposal, WorkEntry } from '../domain/ledger'
-import type { Draft, Editor } from '../components/EntryDialog'
 import type { ParsedIntent } from '../domain/intent'
+import type { Messages } from '../locales/en'
+
+export type Draft = {
+  kind: Proposal['kind']; employerId?: string; name: string; description: string
+  rate: string; days: string; date: string; amount: string
+}
+
+export type Editor = {
+  draft: Draft
+  stage: 'edit' | 'conflict' | 'review'
+  proposal?: Proposal
+  existing?: WorkEntry
+  missing?: ParsedIntent['missing']
+  error?: keyof Messages
+}
 
 function asRupees(paise?: number | null) {
   return paise == null ? '' : (paise / 100).toFixed(paise % 100 ? 2 : 0)
+}
+
+function readDays(input: string) {
+  const value = normalizeDigits(input.trim())
+  return /^\d{1,3}$/.test(value) ? Number(value) : 0
 }
 
 export function newDraft(kind: Draft['kind'], ledger: Ledger): Draft {
@@ -35,9 +54,19 @@ function makeProposal(draft: Draft, ledger: Ledger, replaces?: WorkEntry): Propo
   if (!employerId || !agreement) throw new LedgerError('chooseEmployer')
   if (draft.kind === 'wage') return { id, kind: 'wage', employerId, rate, agreementId: agreement.id }
   if (draft.kind === 'payment') return { id, kind: 'payment', employerId, date: draft.date, amount: readPaise(draft.amount) ?? 0 }
-  const numericDays = normalizeDigits(draft.days.trim())
-  return { id, kind: 'work', employerId, date: draft.date, days: /^\d+$/.test(numericDays) ? Number(numericDays) : 0,
+  return { id, kind: 'work', employerId, date: draft.date, days: readDays(draft.days),
     rate: replaces?.rate ?? agreement.rate, agreementId: agreement.id, replaces: replaces?.id }
+}
+
+// Reparse only the inline controls. The reviewed employer, date, wage agreement,
+// replacement entry and confirmation ID stay attached to the pending proposal.
+export function withInlineEdits(proposal: Proposal, draft: Draft): Proposal {
+  switch (proposal.kind) {
+    case 'employer': return { ...proposal, name: draft.name.trim(), rate: readPaise(draft.rate) ?? 0 }
+    case 'wage': return { ...proposal, rate: readPaise(draft.rate) ?? 0 }
+    case 'work': return { ...proposal, days: readDays(draft.days) }
+    case 'payment': return { ...proposal, amount: readPaise(draft.amount) ?? 0 }
+  }
 }
 
 export function reviewDraft(draft: Draft, ledger: Ledger, replacement?: WorkEntry): Editor {

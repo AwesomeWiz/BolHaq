@@ -1,9 +1,10 @@
-import { ArrowDownLeft, Banknote, Building2, CalendarDays, ClipboardList, Globe2, LockKeyhole, Plus, Volume2, Wallet } from 'lucide-react'
-import { dateLabel, languages, money } from '../locales'
+import { ArrowDownLeft, Banknote, Building2, CalendarDays, ChevronDown, ClipboardList, LockKeyhole, Plus, Volume2, Wallet } from 'lucide-react'
+import { dateLabel, money } from '../locales'
 import type { Locale } from '../locales'
 import type { Messages } from '../locales/en'
 import { currentAgreement, totals } from '../domain/ledger'
 import type { Ledger } from '../domain/ledger'
+import { LanguagePicker } from './LanguagePicker'
 
 export function AppHeader({ locale, t, onLanguage }: { locale: Locale; t: Messages; onLanguage(locale: Locale): void }) {
   return <header className="app-header">
@@ -12,32 +13,34 @@ export function AppHeader({ locale, t, onLanguage }: { locale: Locale; t: Messag
         <div className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></div>
         <div><div className="wordmark" lang="en">BolHaq</div><div className="tagline">{t.tagline}</div></div>
       </div>
-      <label className="language">
-        <Globe2 size={18} aria-hidden="true" />
-        <select aria-label={t.language} value={locale} onChange={event => onLanguage(event.target.value as Locale)}>
-          {languages.map(language => <option key={language.code} lang={language.code} value={language.code}>{language.label}</option>)}
-        </select>
-      </label>
+      <LanguagePicker locale={locale} label={t.language} onSelect={onLanguage} />
     </div>
   </header>
 }
 
-export function WageBalance({ t, locale, ledger, employerId, onSpeak }: {
-  t: Messages; locale: Locale; ledger: Ledger; employerId: string | null; onSpeak(): void
+export function WageBalance({ t, locale, ledger, employerId, playback, onSpeak }: {
+  t: Messages; locale: Locale; ledger: Ledger; employerId: string | null
+  playback?: keyof Messages; onSpeak(): void
 }) {
   const value = totals(ledger, employerId ?? '')
   const number = new Intl.NumberFormat(locale)
+  const label = value.balance < 0 ? t.advance : value.earned > 0 && value.balance === 0 ? t.settled : t.outstanding
   return <section className="balance-card" aria-labelledby="balance-title">
     <div className="balance-heading">
-      <h2 id="balance-title"><Wallet size={19} aria-hidden="true" />{value.balance < 0 ? t.advance : t.outstanding}</h2>
-      {employerId && <button type="button" className="balance-audio" aria-label={t.speakBalance} title={t.speakBalance} onClick={onSpeak}><Volume2 size={20} /></button>}
+      <h2 id="balance-title">{label}</h2>
+      {employerId && <button type="button" className="button balance-audio" aria-label={t.speakBalance} title={t.speakBalance}
+        onClick={onSpeak}><Volume2 size={20} aria-hidden="true" /></button>}
     </div>
-    <p className="balance-value">{employerId ? money(Math.abs(value.balance), locale) : '—'}</p>
+    <div className="balance-announcement" aria-live="polite" aria-atomic="true">
+      <p className="balance-value" key={`${employerId}:${value.balance}`}>{employerId ? money(Math.abs(value.balance), locale) : '—'}</p>
+    </div>
     <dl className="balance-stats">
       <div><dt>{t.days}</dt><dd>{employerId ? number.format(value.days) : '—'}</dd></div>
       <div><dt>{t.earned}</dt><dd>{employerId ? money(value.earned, locale) : '—'}</dd></div>
-      <div><dt>{t.paid}</dt><dd>{employerId ? money(value.paid, locale) : '—'}</dd></div>
+      <div><dt>{t.paid}</dt><dd className={employerId && value.paid ? 'receipt-text' : undefined}>
+        {employerId ? money(value.paid, locale) : '—'}</dd></div>
     </dl>
+    <p className="playback-status" role="status">{playback && t[playback]}</p>
   </section>
 }
 
@@ -46,20 +49,28 @@ export function EmployerCard({ t, locale, ledger, ready, onSelect, onAdd }: {
 }) {
   const employer = ledger.employers.find(item => item.id === ledger.activeId)
   const agreement = employer && currentAgreement(ledger, employer.id)
-  return <section className="panel employer-card" aria-labelledby="employer-title">
-    <div className="employer-heading">
+  return <section className="employer-card" aria-labelledby="employer-title">
+    <div className="employer-row">
       <div className="section-icon"><Building2 size={21} aria-hidden="true" /></div>
-      <h2 id="employer-title">{t.worksite}</h2>
+      <div className="employer-heading">
+        <h2 id="employer-title">{t.worksite}</h2>
+        {employer && <div className="employer-select-wrap">
+          <select className="employer-select" aria-labelledby="employer-title" value={employer.id} disabled={!ready}
+            onChange={event => onSelect(event.target.value)}>
+            {ledger.employers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <ChevronDown size={15} aria-hidden="true" />
+        </div>}
+      </div>
+      <button type="button" className="button add-worksite" onClick={onAdd} disabled={!ready}
+        aria-label={t.addEmployer} title={t.addEmployer}>
+        <Plus size={21} aria-hidden="true" />{!employer && <span>{t.addEmployer}</span>}
+      </button>
     </div>
     {employer ? <>
-      <select className="employer-select" aria-labelledby="employer-title" value={employer.id} disabled={!ready}
-        onChange={event => onSelect(event.target.value)}>
-        {ledger.employers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select>
       {employer.description && <p className="muted employer-notes">{employer.description}</p>}
       {agreement && <p className="current-rate"><span>{t.wage}</span><strong>{money(agreement.rate, locale)}</strong></p>}
-    </> : <p className="muted">{t.noEmployer}</p>}
-    <button type="button" className="button add-worksite" onClick={onAdd} disabled={!ready}><Plus size={19} aria-hidden="true" />{t.addEmployer}</button>
+    </> : <p className="muted employer-notes">{t.noEmployer}</p>}
   </section>
 }
 
@@ -80,23 +91,41 @@ export function ManualActions({ t, ready, onAction }: {
   </section>
 }
 
-export function TransactionList({ t, locale, ledger }: { t: Messages; locale: Locale; ledger: Ledger }) {
+export function TransactionList({ t, locale, ledger, lastSavedId }: {
+  t: Messages; locale: Locale; ledger: Ledger; lastSavedId?: string
+}) {
+  const employer = ledger.employers.find(item => item.id === ledger.activeId)
   const entries = [
-    ...ledger.work.filter(entry => entry.employerId === ledger.activeId).map(entry => ({ ...entry, kind: 'work' as const })),
-    ...ledger.payments.filter(entry => entry.employerId === ledger.activeId).map(entry => ({ ...entry, kind: 'payment' as const })),
-  ].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    ...ledger.work.filter(entry => entry.employerId === employer?.id).map(entry => ({ ...entry, kind: 'work' as const })),
+    ...ledger.payments.filter(entry => entry.employerId === employer?.id).map(entry => ({ ...entry, kind: 'payment' as const })),
+  ].sort((left, right) => right.date.localeCompare(left.date) || right.createdAt.localeCompare(left.createdAt))
+  const groups = new Map<string, typeof entries>()
+  for (const entry of entries) {
+    const group = groups.get(entry.date)
+    if (group) group.push(entry)
+    else groups.set(entry.date, [entry])
+  }
+  const number = new Intl.NumberFormat(locale)
+
   return <section className="panel activity-card" aria-labelledby="activity-title">
-    <h2 id="activity-title"><ClipboardList size={20} aria-hidden="true" />{t.activity}</h2>
-    {entries.length === 0 ? <p className="empty-state muted">{t.empty}</p> : <ul className="transactions">
-      {entries.map(entry => <li key={entry.id}>
-        <div className={`entry-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'work' ? <CalendarDays size={19} /> : <ArrowDownLeft size={19} />}</div>
-        <div className="entry-info"><strong>{entry.kind === 'work' ? t.workEntry : t.paymentEntry}</strong>
-          <div className="entry-meta muted"><time dateTime={entry.date}>{dateLabel(entry.date, locale)}</time>
-            {entry.kind === 'work' && <span>{t.days} · {new Intl.NumberFormat(locale).format(entry.days)} · {money(entry.rate, locale)}</span>}</div>
-        </div>
-        <strong className="entry-amount">{entry.kind === 'work' ? money(entry.rate * entry.days, locale) : money(entry.amount, locale)}</strong>
-      </li>)}
-    </ul>}
+    <h2 id="activity-title">{t.activity}</h2>
+    {groups.size === 0 ? <div className="empty-state"><ClipboardList size={22} aria-hidden="true" /><p>{t.empty}</p></div> :
+      [...groups].map(([date, transactions]) => <div key={date} className="activity-group">
+        <h3><time dateTime={date}>{dateLabel(date, locale)}</time></h3>
+        <ul className="transactions">
+          {transactions.map(entry => <li key={entry.id} data-new={lastSavedId === entry.id || undefined}>
+            <div className={`entry-icon ${entry.kind}`} aria-hidden="true">
+              {entry.kind === 'work' ? <CalendarDays size={19} /> : <ArrowDownLeft size={19} />}</div>
+            <div className="entry-info"><strong>{entry.kind === 'work' ? t.workEntry : t.paymentEntry}</strong>
+              <p className="entry-meta">{employer?.name}
+                {entry.kind === 'work' && <span>{t.days} · {number.format(entry.days)}</span>}</p>
+            </div>
+            <strong className={`entry-amount ${entry.kind === 'payment' ? 'receipt-text' : ''}`}>
+              {entry.kind === 'work' ? money(entry.rate * entry.days, locale) : `+ ${money(entry.amount, locale)}`}
+            </strong>
+          </li>)}
+        </ul>
+      </div>)}
   </section>
 }
 

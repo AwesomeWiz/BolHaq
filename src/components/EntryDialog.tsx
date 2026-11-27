@@ -1,22 +1,36 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
-import type { Proposal, WorkEntry } from '../domain/ledger'
 import { localDate } from '../domain/ledger'
+import { withInlineEdits } from '../features/proposals'
+import type { Draft, Editor } from '../features/proposals'
 import { dateLabel, money } from '../locales'
 import type { Locale } from '../locales'
 import type { Messages } from '../locales/en'
 
-export type Draft = {
-  kind: Proposal['kind']; employerId?: string; name: string; description: string
-  rate: string; days: string; date: string; amount: string
+type Field = Exclude<keyof Draft, 'kind' | 'employerId'>
+const fields: Record<Draft['kind'], Field[]> = {
+  employer: ['name', 'rate', 'description'], wage: ['rate'], work: ['days', 'date'], payment: ['amount', 'date'],
 }
 
-export type Editor = {
-  draft: Draft
-  stage: 'edit' | 'conflict' | 'review'
-  proposal?: Proposal
-  existing?: WorkEntry
-  error?: keyof Messages
+function EntryField({ draft, field, t, reviewing, onChange }: {
+  draft: Draft; field: Field; t: Messages; reviewing: boolean; onChange(patch: Partial<Draft>): void
+}) {
+  const label = {
+    name: t.name, description: t.description, rate: t.wageInput, days: t.days, date: t.date, amount: t.amount,
+  }[field]
+  const name = field === 'name'
+  const count = field === 'days'
+  const date = field === 'date'
+  const change = (value: string) => onChange({ [field]: value })
+  return <label>{label}
+    {field === 'description' ? <textarea name={field} rows={2} maxLength={160} value={draft[field]}
+      onChange={event => change(event.target.value)} /> :
+      <input name={field} className={reviewing && !name ? 'inline-amount' : undefined} required
+        type={date ? 'date' : 'text'} min={date ? '1900-01-01' : undefined} max={date ? localDate() : undefined}
+        inputMode={name || date ? undefined : count ? 'numeric' : 'decimal'}
+        maxLength={name ? 80 : count ? 3 : date ? undefined : 20}
+        value={draft[field]} onChange={event => change(event.target.value)} />}
+  </label>
 }
 
 export function EntryDialog({ editor, t, locale, employerName, transcript, saving, onChange, onReview, onEdit, onConfirm, onClose }: {
@@ -30,9 +44,13 @@ export function EntryDialog({ editor, t, locale, employerName, transcript, savin
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
+  const form = useRef<HTMLFormElement>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const [closing, setClosing] = useState(false)
   const visible = editor !== null
   const stage = editor?.stage
+  const firstMissing = editor?.missing?.[0]
   useEffect(() => {
     const element = dialog.current
     if (!element) return
@@ -45,75 +63,92 @@ export function EntryDialog({ editor, t, locale, employerName, transcript, savin
       returnFocus.current?.focus()
     }
   }, [visible])
-  useEffect(() => { if (visible) heading.current?.focus() }, [visible, stage])
+  useEffect(() => {
+    if (!visible) return
+    const missingField = firstMissing && form.current?.elements.namedItem(firstMissing)
+    if (missingField instanceof HTMLElement) missingField.focus()
+    else heading.current?.focus()
+  }, [visible, stage, firstMissing])
+  useEffect(() => () => clearTimeout(closeTimer.current), [])
 
-  const title = editor && (editor.stage === 'conflict' ? t.duplicateWork :
-    editor.proposal?.kind === 'work' && editor.proposal.replaces ? t.replaceTitle :
-    { employer: t.addEmployer, wage: t.editWage, work: t.work, payment: t.payment }[editor.draft.kind])
+  function closeSheet() {
+    if (saving || closing) return
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      onClose()
+      return
+    }
+    setClosing(true)
+    closeTimer.current = setTimeout(() => { setClosing(false); onClose() }, 140)
+  }
+
   const draft = editor?.draft
-  const proposal = editor?.proposal
-  const workOrPayment = draft?.kind === 'work' || draft?.kind === 'payment'
+  const proposal = editor?.proposal && withInlineEdits(editor.proposal, editor.draft)
+  const reviewing = editor?.stage === 'review' && Boolean(proposal)
+  const title = editor && (editor.stage === 'conflict' ? t.duplicateWork :
+    proposal?.kind === 'work' && proposal.replaces ? t.replaceTitle :
+    { employer: t.addEmployer, wage: t.editWage, work: t.work, payment: t.payment }[editor.draft.kind])
+  const displayAmount = proposal?.kind === 'work' ? proposal.days * proposal.rate :
+    proposal?.kind === 'payment' ? proposal.amount : proposal?.rate
+  const canEditDetails = draft?.kind !== 'wage'
+  const blocked = saving || closing
+  const selectedFields = draft && (reviewing ? fields[draft.kind].filter(field => field !== 'date' && field !== 'description') : fields[draft.kind])
+  const amountLabel = proposal?.kind === 'work' ? t.earned : proposal?.kind === 'payment' ? t.paymentEntry : t.wage
 
-  return <dialog ref={dialog} aria-labelledby="dialog-title" onCancel={event => {
-    event.preventDefault()
-    if (!saving) onClose()
-  }}>
+  return <dialog className="entry-dialog" ref={dialog} data-closing={closing || undefined}
+    aria-labelledby="dialog-title" aria-busy={saving} onCancel={event => {
+      event.preventDefault()
+      closeSheet()
+    }}>
     {editor && draft && <div className="dialog-content">
       <div className="dialog-heading">
         <h2 id="dialog-title" ref={heading} tabIndex={-1}>{title}</h2>
-        <button type="button" className="button close-button" aria-label={t.cancel} onClick={onClose} disabled={saving}><X size={22} /></button>
+        <button type="button" className="button close-button" aria-label={t.closeDialog} onClick={closeSheet}
+          disabled={blocked}><X size={22} aria-hidden="true" /></button>
       </div>
-      {draft.kind !== 'employer' && <p className="dialog-employer"><span>{t.worksite}</span><strong>{employerName}</strong></p>}
-      {transcript && <p className="dialog-employer"><span>{t.heard}</span><strong>{transcript}</strong></p>}
+      {reviewing && <div className="confirmation-amount">
+        <span>{amountLabel}</span><strong className="confirmation-value">{displayAmount ? money(displayAmount, locale) : '—'}</strong>
+      </div>}
+      {draft.kind !== 'employer' && <p className="dialog-employer">{t.worksite} · <strong>{employerName}</strong></p>}
       {editor.error && <p className="notice error" role="alert">{t[editor.error]}</p>}
-      {editor.stage === 'edit' && <form onSubmit={event => { event.preventDefault(); onReview() }} className="entry-form">
-        {draft.kind === 'employer' && <>
-          <label>{t.name}<input required maxLength={80} value={draft.name} onChange={event => onChange({ name: event.target.value })} /></label>
-          <label>{t.description}<textarea rows={2} maxLength={160} value={draft.description} onChange={event => onChange({ description: event.target.value })} /></label>
-        </>}
-        {(draft.kind === 'employer' || draft.kind === 'wage') &&
-          <label>{t.wageInput}<input inputMode="decimal" required maxLength={20} value={draft.rate} onChange={event => onChange({ rate: event.target.value })} /></label>}
-        {draft.kind === 'wage' && <p className="muted">{t.wageHint}</p>}
-        {workOrPayment && <label>{t.date}<input type="date" required min="1900-01-01" max={localDate()}
-          value={draft.date} onChange={event => onChange({ date: event.target.value })} /></label>}
-        {draft.kind === 'work' && <label>{t.days}<input inputMode="numeric" required maxLength={3}
-          value={draft.days} onChange={event => onChange({ days: event.target.value })} /></label>}
-        {draft.kind === 'payment' && <label>{t.amount}<input inputMode="decimal" required maxLength={20}
-          value={draft.amount} onChange={event => onChange({ amount: event.target.value })} /></label>}
-        <div className="dialog-actions"><button className="button" type="button" onClick={onClose}>{t.cancel}</button>
-          <button className="button primary" type="submit">{t.review}</button></div>
-      </form>}
-      {editor.stage === 'conflict' && editor.existing && <div>
+      {editor.stage === 'conflict' && editor.existing && <>
         <dl className="review-details">
           <div><dt>{t.date}</dt><dd>{dateLabel(editor.existing.date, locale)}</dd></div>
           <div><dt>{t.previous}</dt><dd>{new Intl.NumberFormat(locale).format(editor.existing.days)}</dd></div>
         </dl>
-        <div className="dialog-actions"><button className="button" type="button" onClick={onEdit}>{t.edit}</button>
-          <button className="button primary" type="button" onClick={() => onReview(true)}>{t.replace}</button></div>
-      </div>}
-      {editor.stage === 'review' && proposal && <div>
-        <dl className="review-details">
-          {proposal.kind === 'employer' && <>
-            <div><dt>{t.name}</dt><dd>{proposal.name}</dd></div>
-            {proposal.description && <div><dt>{t.description}</dt><dd>{proposal.description}</dd></div>}
-          </>}
-          {'rate' in proposal && <div><dt>{t.wage}</dt><dd>{money(proposal.rate, locale)}</dd></div>}
+        <div className="dialog-actions">
+          <button className="button" type="button" disabled={blocked} onClick={closeSheet}>{t.cancel}</button>
+          <button className="button" type="button" disabled={blocked} onClick={onEdit}>{t.edit}</button>
+          <button className="button primary" type="button" disabled={blocked} onClick={() => onReview(true)}>{t.replace}</button>
+        </div>
+      </>}
+      {editor.stage !== 'conflict' && <form ref={form} onSubmit={event => {
+        event.preventDefault()
+        if (!reviewing && !blocked) onReview()
+      }} className="entry-form">
+        {reviewing && proposal && ('date' in proposal || proposal.kind === 'employer' && proposal.description) && <dl className="review-details">
           {'date' in proposal && <div><dt>{t.date}</dt><dd>{dateLabel(proposal.date, locale)}</dd></div>}
           {proposal.kind === 'work' && <>
+            <div><dt>{t.wage}</dt><dd>{money(proposal.rate, locale)}</dd></div>
             {editor.existing && <div><dt>{t.previous}</dt><dd>{new Intl.NumberFormat(locale).format(editor.existing.days)}</dd></div>}
-            <div><dt>{t.days}</dt><dd>{new Intl.NumberFormat(locale).format(proposal.days)}</dd></div>
-            <div><dt>{t.earned}</dt><dd>{money(proposal.days * proposal.rate, locale)}</dd></div>
           </>}
-          {proposal.kind === 'payment' && <div><dt>{t.amount}</dt><dd>{money(proposal.amount, locale)}</dd></div>}
-        </dl>
+          {proposal.kind === 'employer' && <div><dt>{t.description}</dt><dd>{proposal.description}</dd></div>}
+        </dl>}
+        <fieldset className="entry-fields" disabled={blocked}>
+          {selectedFields?.map(field => <EntryField key={field} draft={draft} field={field} t={t} reviewing={reviewing} onChange={onChange} />)}
+        </fieldset>
+        {draft.kind === 'wage' && <p className="muted">{t.wageHint}</p>}
+        {transcript && <p className="dialog-transcript"><span>{t.heard}</span>{transcript}</p>}
         <div className="dialog-actions">
-          <button className="button" type="button" onClick={onClose} disabled={saving}>{t.cancel}</button>
-          <button className="button" type="button" onClick={onEdit} disabled={saving}>{t.edit}</button>
-          <button className="button primary" type="button" onClick={onConfirm} disabled={saving}>
-            <Check size={18} aria-hidden="true" />{saving ? t.saving : t.confirm}
-          </button>
+          <button className="button" type="button" disabled={blocked} onClick={closeSheet}>{t.cancel}</button>
+          {reviewing ? <>
+            {canEditDetails && <button className="button" type="button" disabled={blocked} onClick={onEdit}>{t.editDetails}</button>}
+            <button className="button primary" type="button" disabled={blocked}
+              onClick={() => { if (form.current?.reportValidity()) onConfirm() }}>
+              <Check size={18} aria-hidden="true" />{saving ? t.saving : t.confirm}
+            </button>
+          </> : <button className="button primary" disabled={blocked} type="submit">{t.review}</button>}
         </div>
-      </div>}
+      </form>}
     </div>}
   </dialog>
 }

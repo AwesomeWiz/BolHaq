@@ -1,6 +1,12 @@
 import type { Messages } from './en'
 
 export const hi: Messages = {
+  "starting": "माइक्रोफ़ोन चालू हो रहा है…",
+  "settled": "पूरा भुगतान हुआ",
+  "reading": "बकाया पढ़ रहे हैं…",
+  "playbackError": "ब्राउज़र बकाया पढ़कर सुना नहीं सका। आप उसे यहाँ देख सकते हैं।",
+  "editDetails": "जानकारी बदलें",
+  "closeDialog": "एंट्री बंद करें",
   "tagline": "आपकी मज़दूरी। आपकी भाषा।",
   "language": "भाषा",
   "ledger": "मेरा मज़दूरी हिसाब",

@@ -1,70 +1,114 @@
-import { useRef, useState } from 'react'
-import { ArrowRight, ChevronDown, Keyboard, Mic, Square } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowRight, Check, CircleAlert, CircleHelp, Keyboard, LoaderCircle, Mic, Square } from 'lucide-react'
 import type { Messages } from '../locales/en'
 
-export type VoiceStatus = 'idle' | 'listening' | 'processing' | 'awaiting' | 'success' | 'error'
-export type VoiceFeedback = { status: VoiceStatus; message?: keyof Messages; reply?: string; transcript?: string }
+export type VoiceStatus = 'idle' | 'starting' | 'listening' | 'processing' | 'awaiting' | 'success' | 'error'
+export type VoiceFeedback = {
+  status: VoiceStatus
+  message?: keyof Messages
+  reply?: string
+  transcript?: string
+  startedAt?: number
+  sound?: boolean
+}
 
-export function VoicePanel({ t, examples, feedback, ready, available, onMic, onCommand }: {
-  t: Messages
-  examples: readonly string[]
-  feedback: VoiceFeedback
-  ready: boolean
-  available: boolean
-  onMic(): void
-  onCommand(command: string): void
+const pattern = [10, 16, 25, 14, 34, 51, 29, 63, 44, 78, 55, 85, 64, 43, 71, 39]
+
+function Waveform({ reverse = false }: { reverse?: boolean }) {
+  const bars = reverse ? [...pattern].reverse() : pattern
+  return <div className="waveform" aria-hidden="true">
+    {bars.map((height, index) => <i key={index} style={{ height: height + '%', animationDelay: -height * 11 + 'ms' }} />)}
+  </div>
+}
+
+function RecordingClock({ startedAt }: { startedAt: number }) {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined
+    function sync() {
+      clearInterval(timer)
+      if (document.hidden) return
+      const tick = () => setSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+      tick()
+      timer = setInterval(tick, 250)
+    }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', sync) }
+  }, [startedAt])
+  const time = [Math.floor(seconds / 60), seconds % 60].map(value => String(value).padStart(2, '0')).join(':')
+  return <time className="recording-clock" dateTime={`PT${seconds}S`}>{time}</time>
+}
+
+export function VoicePanel({ t, examples, feedback, ready, available, onMic, onCancel, onCommand }: {
+  t: Messages; examples: readonly string[]; feedback: VoiceFeedback; ready: boolean; available: boolean
+  onMic(): void; onCancel(): void; onCommand(command: string): void
 }) {
   const [typed, setTyped] = useState(false)
+  const [help, setHelp] = useState(false)
   const [command, setCommand] = useState('')
   const input = useRef<HTMLInputElement>(null)
-  const listening = feedback.status === 'listening'
-  const processing = feedback.status === 'processing'
-  const busy = listening || processing
-  const message = feedback.message ? t[feedback.message] : feedback.reply ??
-    (feedback.status === 'idle' ? (available ? '' : t.unsupported) : feedback.status === 'error' ? t.unknown : t[feedback.status])
+  const { status, transcript, startedAt, sound, reply } = feedback
+  const listening = status === 'listening'
+  const busy = listening || status === 'starting' || status === 'processing'
+  const buttonLabel = listening ? t.stop : status === 'starting' ? t.starting :
+    status === 'processing' ? t.processing : t.tap
+  const message = feedback.message ? t[feedback.message] :
+    status === 'idle' ? (available ? '' : t.unsupported) : status === 'error' ? t.unknown :
+      (reply || status === 'success' || status === 'awaiting' ? t[status] : '')
+  const Icon = listening ? Square : busy ? LoaderCircle : Mic
 
-  return <section className="voice-panel" aria-labelledby="voice-title" data-state={feedback.status}>
+  useEffect(() => { if (typed && !busy) input.current?.focus() }, [typed, busy])
+
+  return <section className="voice-panel" aria-labelledby="voice-title" data-state={status} data-sound={sound || undefined}>
     <div className="voice-copy">
       <h2 id="voice-title">{t.voice}</h2>
       <p>{t.voiceHelp}</p>
     </div>
     <div className="mic-stage">
-      <div className="wave wave-left" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
+      <Waveform />
       <div className="mic-ring">
-        <button type="button" className="mic-button" onClick={onMic} disabled={!ready || processing}
-          aria-label={listening ? t.stop : t.tap}>
-          {listening ? <Square size={30} fill="currentColor" /> : <Mic size={40} strokeWidth={1.85} />}
+        <button type="button" className="mic-button" onClick={() => { if (!busy || listening) onMic() }} disabled={!ready}
+          aria-disabled={status === 'processing' || status === 'starting' || undefined}
+          aria-label={buttonLabel}>
+          <Icon size={listening ? 27 : 39} strokeWidth={1.8} fill={listening ? 'currentColor' : 'none'} aria-hidden="true" />
         </button>
       </div>
-      <div className="wave wave-right" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
+      <Waveform reverse />
     </div>
-    <p className="mic-caption">{listening ? t.stop : processing ? t.processing : t.tap}</p>
-    <div className={`voice-feedback ${feedback.status === 'error' ? 'error' : ''}`} role="status" aria-atomic="true">
-      {message && <p>{message}</p>}
-      {feedback.transcript && <p className="transcript"><span>{t.heard}</span> {feedback.transcript}</p>}
+    <div className="recording-meta">
+      <p className="mic-caption" role="status">
+        {listening && <i className="live-dot" aria-hidden="true" />}
+        {listening ? t.listening : buttonLabel}
+      </p>
+      {listening && startedAt !== undefined && <RecordingClock startedAt={startedAt} />}
     </div>
-    <div className="voice-alternatives">
-      <button className="button voice-secondary" type="button" aria-expanded={typed} aria-controls="typed-command"
-        onClick={() => {
-          if (typed) setTyped(false)
-          else {
-            setTyped(true)
-            requestAnimationFrame(() => input.current?.focus())
-          }
-        }}><Keyboard size={18} aria-hidden="true" />{t.type}</button>
-      <details className="examples">
-        <summary>{t.examples}<ChevronDown size={16} aria-hidden="true" /></summary>
-        <ul>{examples.map(example => <li key={example}>{example}</li>)}</ul>
-      </details>
+    <div className={`voice-feedback ${status === 'error' ? 'error' : ''}`} role="status" aria-atomic="true">
+      {reply && <p className="voice-reply">{reply}</p>}
+      {message && (!reply || feedback.message) && <p>
+        {status === 'error' && <CircleAlert size={16} aria-hidden="true" />}
+        {status === 'success' && !reply && <Check size={16} aria-hidden="true" />}{message}
+      </p>}
+      {transcript && <p className="transcript"><span>{t.heard}</span>{transcript}</p>}
     </div>
-    <form id="typed-command" className="typed-form" hidden={!typed} onSubmit={event => {
+    {busy ? <button type="button" className="button voice-secondary" onClick={onCancel}>{t.cancel}</button> :
+      <div className="voice-alternatives">
+        <button className="button voice-secondary" type="button" aria-expanded={typed} aria-controls="typed-command"
+          onClick={() => { setTyped(!typed); setHelp(false) }}><Keyboard size={18} aria-hidden="true" />{t.type}</button>
+        <button className="button voice-secondary" type="button" aria-expanded={help} aria-controls="voice-examples"
+          onClick={() => { setHelp(!help); setTyped(false) }}><CircleHelp size={18} aria-hidden="true" />{t.examples}</button>
+      </div>}
+    <div id="voice-examples" className="examples" hidden={!help || busy}>
+      <ul>{examples.map(example => <li key={example}>{example}</li>)}</ul>
+    </div>
+    <form id="typed-command" className="typed-form" hidden={!typed || busy} onSubmit={event => {
       event.preventDefault()
       const value = command.trim()
       if (value) onCommand(value)
     }}>
       <input ref={input} value={command} onChange={event => setCommand(event.target.value)}
         aria-label={t.type} placeholder={examples[0]} maxLength={300} required />
-      <button className="button primary" disabled={!ready || busy} type="submit" aria-label={t.send}><ArrowRight size={20} /></button>
+      <button className="button primary" disabled={!ready || busy} type="submit" aria-label={t.send}><ArrowRight size={20} aria-hidden="true" /></button>
     </form>
   </section>
 }
