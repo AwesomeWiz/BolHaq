@@ -60,12 +60,7 @@ const messages = {
     "backupVersion": "This backup format version is not supported.",
     "backupLarge": "Choose a backup file of 10 MB or less.",
     "guide": "Get started with voice",
-    "guideLanguage": "Choose your language in the menu above.",
-    "guideMic": "Tap the microphone and speak. You can also type a command.",
-    "guideSite": "Add a worksite and set your daily wage.",
-    "guideWork": "Record a workday, then check your balance.",
-    "guideSkip": "Skip guide",
-    "guideDone": "Done"
+    "guideSkip": "Skip guide"
   },
   "hi-IN": {
     "tools": "मज़दूरी के टूल",
@@ -126,12 +121,7 @@ const messages = {
     "backupVersion": "इस बैकअप फ़ॉर्मेट का संस्करण समर्थित नहीं है।",
     "backupLarge": "10 MB या उससे छोटी बैकअप फ़ाइल चुनें।",
     "guide": "आवाज़ से शुरुआत करें",
-    "guideLanguage": "ऊपर दिए मेन्यू से अपनी भाषा चुनें।",
-    "guideMic": "माइक दबाकर बोलें। आप कमांड टाइप भी कर सकते हैं।",
-    "guideSite": "कार्यस्थल जोड़ें और अपनी दिहाड़ी तय करें।",
-    "guideWork": "काम का दिन दर्ज करें, फिर अपना बकाया देखें।",
-    "guideSkip": "गाइड छोड़ें",
-    "guideDone": "हो गया"
+    "guideSkip": "गाइड छोड़ें"
   },
   "ml-IN": {
     "tools": "കൂലി കണക്കിനുള്ള സൗകര്യങ്ങൾ",
@@ -192,12 +182,7 @@ const messages = {
     "backupVersion": "ബാക്കപ്പിന്റെ ഈ പതിപ്പ് ഉപയോഗിക്കാനാവില്ല.",
     "backupLarge": "10 MB-യോ അതിൽ കുറവോ ഉള്ള ബാക്കപ്പ് ഫയൽ തിരഞ്ഞെടുക്കൂ.",
     "guide": "ശബ്ദം ഉപയോഗിച്ച് തുടങ്ങാം",
-    "guideLanguage": "മുകളിലെ മെനുവിൽ നിന്ന് നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കൂ.",
-    "guideMic": "മൈക്ക് അമർത്തി പറയൂ. നിർദ്ദേശം ടൈപ്പ് ചെയ്യാനും കഴിയും.",
-    "guideSite": "ഒരു ജോലിസ്ഥലം ചേർത്ത് ദിവസക്കൂലി രേഖപ്പെടുത്തൂ.",
-    "guideWork": "ജോലി ചെയ്ത ദിവസം രേഖപ്പെടുത്തി ബാക്കി കൂലി നോക്കൂ.",
-    "guideSkip": "സഹായ നിർദ്ദേശങ്ങൾ ഒഴിവാക്കുക",
-    "guideDone": "പൂർത്തിയായി"
+    "guideSkip": "സഹായ നിർദ്ദേശങ്ങൾ ഒഴിവാക്കുക"
   }
 } as const
 

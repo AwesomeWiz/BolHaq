@@ -1,6 +1,11 @@
 import type { Locale } from '../locales'
+import { recordSpeechEvent } from './speechDiagnostics'
+import type { RecognitionAPI, SpeechPhase } from './speechDiagnostics'
 
-export type SpeechIssue = 'unsupported' | 'denied' | 'timeout' | 'emptySpeech' | 'speechLanguage' | 'speechError' | 'speechInterrupted'
+export type SpeechIssue = 'unsupported' | 'denied' | 'timeout' | 'emptySpeech' | 'speechLanguage' |
+  'speechError' | 'speechInterrupted' | 'speechUnavailable' | 'speechCapture'
+
+type Result = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
 interface Recognition {
   lang: string
   continuous: boolean
@@ -11,10 +16,12 @@ interface Recognition {
   onaudioend: (() => void) | null
   onsoundstart: (() => void) | null
   onsoundend: (() => void) | null
+  onspeechstart: (() => void) | null
   onspeechend: (() => void) | null
   onend: (() => void) | null
-  onerror: ((event: { error: string }) => void) | null
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null
+  onnomatch: (() => void) | null
+  onerror: ((event: { error: string; message?: string }) => void) | null
+  onresult: ((event: { resultIndex?: number; results: ArrayLike<Result> }) => void) | null
   start(): void
   stop(): void
   abort(): void
@@ -26,6 +33,7 @@ type RecognitionWindow = Window & {
 
 export interface SpeechToTextProvider {
   available(): boolean
+  cancel(): void
   listen(locale: Locale, callbacks: {
     started(): void
     sound(active: boolean): void
@@ -35,88 +43,185 @@ export interface SpeechToTextProvider {
   }): { stop(): void; cancel(): void }
 }
 
-function recognitionConstructor() {
+function recognitionOption() {
   const browser = window as RecognitionWindow
-  return browser.SpeechRecognition ?? browser.webkitSpeechRecognition
+  const API = browser.SpeechRecognition ?? browser.webkitSpeechRecognition
+  const name: RecognitionAPI = browser.SpeechRecognition ? 'standard' : API ? 'webkit' : 'unavailable'
+  return { API, name }
 }
 
+export function recognitionSupport() { return recognitionOption().name }
+
+function browserIssue(code: string): SpeechIssue {
+  switch (code) {
+    case 'not-allowed': case 'NotAllowedError': case 'SecurityError': return 'denied'
+    case 'language-not-supported': return 'speechLanguage'
+    case 'service-not-allowed': case 'network': return 'speechUnavailable'
+    case 'audio-capture': case 'NotReadableError': return 'speechCapture'
+    case 'no-speech': return 'emptySpeech'
+    case 'aborted': case 'AbortError': return 'speechInterrupted'
+    default: return 'speechError'
+  }
+}
+
+let lastSession = 0
+let cancelActive: (() => void) | undefined
+
 export const speechToText: SpeechToTextProvider = {
-  available: () => Boolean(recognitionConstructor()),
+  available: () => recognitionSupport() !== 'unavailable',
+  cancel: () => cancelActive?.(),
   listen(locale, callbacks) {
+    cancelActive?.()
+    const { API, name } = recognitionOption()
+    const id = ++lastSession
     let session: Recognition | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
-    let finished = false
-    let phase: 'starting' | 'listening' | 'processing' = 'starting'
-    const started = () => {
-      if (finished || phase !== 'starting') return
+    let phase: SpeechPhase = 'starting'
+
+    function report(event: Parameters<typeof recordSpeechEvent>[0]['event'],
+      detail?: Partial<Pick<Parameters<typeof recordSpeechEvent>[0], 'transcriptReturned' | 'errorCode' | 'errorMessage'>>) {
+      if (import.meta.env.DEV) recordSpeechEvent({
+        event, session: id, interfaceLocale: locale, requestedLocale: locale, phase, api: name, ...detail,
+      })
+    }
+
+    function detach(instance: Recognition, keepEnd = false) {
+      instance.onstart = instance.onaudiostart = instance.onaudioend =
+        instance.onsoundstart = instance.onsoundend = instance.onspeechstart =
+        instance.onspeechend = instance.onnomatch = instance.onresult = instance.onerror = null
+      if (!keepEnd) instance.onend = null
+    }
+
+    function close(abort: boolean) {
+      if (phase === 'closed') return
+      phase = 'closed'
+      clearTimeout(timer)
+      const instance = session
+      session = undefined
+      if (cancelActive === cancel) cancelActive = undefined
+      if (instance) {
+        detach(instance)
+        if (abort) {
+          try { instance.abort() } catch { /* The browser can already have released recognition. */ }
+        }
+      }
+      report('close')
+    }
+
+    function fail(issue: SpeechIssue, abort = true) {
+      if (phase === 'closed' || phase === 'finishing') return
+      close(abort)
+      callbacks.failed(issue)
+    }
+
+    function awaitEnd() {
+      const instance = session
+      if (!instance) return
+      phase = 'finishing'
+      clearTimeout(timer)
+      // Only the browser end event is relevant after a terminal result or error.
+      detach(instance, true)
+      timer = setTimeout(() => close(true), 1000)
+    }
+
+    function cancel() {
+      if (phase === 'closed') return
+      report('cancel')
+      close(true)
+    }
+
+    function started(event: 'start' | 'audiostart') {
+      if (phase === 'closed' || phase === 'finishing') return
+      report(event)
+      if (phase !== 'starting') return
       phase = 'listening'
       callbacks.started()
     }
-    const processing = () => {
-      if (finished || phase === 'processing') return
+
+    function processing() {
+      if (phase === 'closed' || phase === 'finishing' || phase === 'processing') return
       phase = 'processing'
       callbacks.processing()
     }
-    const sound = (active: boolean) => {
-      if (!finished && phase === 'listening') callbacks.sound(active)
+
+    function startFailed(error: unknown) {
+      const code = error instanceof Error ? error.name : 'start-failed'
+      // Browser-provided error descriptions are displayed in memory only.
+      report('error', { errorCode: code, errorMessage: error instanceof Error ? error.message.slice(0, 240) : undefined })
+      fail(browserIssue(code))
     }
-    const finish = () => {
-      if (finished) return false
-      finished = true
-      clearTimeout(timer)
-      return true
-    }
-    const abort = () => {
-      try { session?.abort() } catch { /* The browser may already have ended recognition. */ }
-    }
-    const fail = (issue: SpeechIssue) => {
-      if (!finish()) return
-      abort()
-      callbacks.failed(issue)
-    }
-    const stop = () => {
-      if (finished || !session || phase === 'processing') return
+
+    function stop() {
+      if (!session || phase !== 'listening') return
       processing()
-      try { session.stop() } catch { fail('speechError') }
+      try { session.stop() } catch (error) { startFailed(error) }
     }
-    const cancel = () => {
-      if (finish()) abort()
-    }
-    const API = recognitionConstructor()
+
+    cancelActive = cancel
+    report('request')
     if (!API) {
       queueMicrotask(() => fail('unsupported'))
       return { stop, cancel }
     }
+
     try {
       session = new API()
       session.lang = locale
       session.continuous = false
       session.interimResults = false
       session.maxAlternatives = 1
-      session.onstart = started
-      session.onaudiostart = started
-      session.onsoundstart = () => sound(true)
-      session.onsoundend = () => sound(false)
+      session.onstart = () => started('start')
+      session.onaudiostart = () => started('audiostart')
+      session.onsoundstart = () => {
+        if (phase === 'closed' || phase === 'finishing') return
+        report('soundstart')
+        if (phase === 'listening') callbacks.sound(true)
+      }
+      session.onsoundend = () => { if (phase === 'listening') callbacks.sound(false) }
+      session.onspeechstart = () => { if (phase !== 'closed' && phase !== 'finishing') report('speechstart') }
       session.onspeechend = processing
       session.onaudioend = processing
       session.onresult = event => {
-        const transcript = event.results[0]?.[0]?.transcript.trim()
-        if (!transcript) fail('emptySpeech')
-        else if (finish()) callbacks.recognized(transcript)
+        if (phase === 'closed' || phase === 'finishing') return
+        let transcript = ''
+        let hasFinal = false
+        let transcriptReturned = false
+        for (let index = event.resultIndex ?? 0; index < event.results.length; index++) {
+          const result = event.results[index]
+          const text = result?.[0]?.transcript.trim()
+          if (text) transcriptReturned = true
+          if (result?.isFinal === false) continue
+          hasFinal = true
+          if (text) transcript += (transcript ? ' ' : '') + text
+        }
+        report('result', { transcriptReturned })
+        if (!hasFinal && event.results.length) return
+        awaitEnd()
+        if (transcript) callbacks.recognized(transcript)
+        else callbacks.failed('emptySpeech')
       }
-      session.onend = () => fail('emptySpeech')
-      session.onerror = ({ error }) => {
-        if (error === 'not-allowed' || error === 'service-not-allowed') fail('denied')
-        else if (error === 'no-speech') fail('emptySpeech')
-        else if (error === 'language-not-supported') fail('speechLanguage')
-        else if (error === 'aborted') fail('speechInterrupted')
-        else fail('speechError')
+      session.onnomatch = () => {
+        if (phase === 'closed' || phase === 'finishing') return
+        report('nomatch', { transcriptReturned: false })
+        awaitEnd()
+        callbacks.failed('emptySpeech')
       }
-      timer = setTimeout(() => fail('timeout'), 12_000)
+      session.onend = () => {
+        if (phase === 'closed') return
+        report('end')
+        if (phase === 'finishing') close(false)
+        else fail('emptySpeech', false)
+      }
+      session.onerror = ({ error, message }) => {
+        if (phase === 'closed' || phase === 'finishing') return
+        report('error', { errorCode: error, errorMessage: message?.slice(0, 240) })
+        awaitEnd()
+        callbacks.failed(browserIssue(error))
+      }
+      timer = setTimeout(() => { report('timeout'); fail('timeout') }, 12_000)
       session.start()
     } catch (error) {
-      const issue = error instanceof DOMException && ['SecurityError', 'NotAllowedError'].includes(error.name) ? 'denied' : 'speechError'
-      queueMicrotask(() => fail(issue))
+      queueMicrotask(() => { if (phase !== 'closed') startFailed(error) })
     }
     return { stop, cancel }
   },

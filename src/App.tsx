@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { DatabaseBackup, FileText, LayoutList, MessageSquareText } from 'lucide-react'
 import { AppHeader, EmployerCard, LocalFooter, ManualActions, TransactionList, WageBalance } from './components/LedgerPanels'
 import { EntryDialog } from './components/EntryDialog'
 import { BackupPanel } from './components/BackupPanel'
-import { VoiceGuide } from './components/VoiceGuide'
+import { GuidedTour, VoiceGuide } from './components/VoiceGuide'
+import { SpeechDiagnostics } from './components/SpeechDiagnostics'
+import { speechDebugEnabled } from './services/speechDiagnostics'
 import { VoicePanel } from './components/VoicePanel'
 import { ToolDialog } from './components/ToolDialog'
 import { WageReports } from './components/WageReports'
@@ -19,6 +21,9 @@ import type { Draft, Editor } from './features/proposals'
 import { languages, money } from './locales'
 import type { Locale } from './locales'
 import type { Messages } from './locales/en'
+import { onboarding, tourSteps } from './locales/onboarding'
+import { tourNarration } from './services/tourNarration'
+import type { PlaybackResult } from './services/readAloud'
 import { wageTools } from './locales/wageTools'
 import { speechToText } from './services/speech'
 import { spokenMoney, textToSpeech } from './services/readAloud'
@@ -34,7 +39,10 @@ function preferredLocale(): Locale {
 
 function shouldShowGuide(ledger: Ledger) {
   if (ledger.employers.length) return false
-  try { return localStorage.getItem('bolhaq-guide-complete') !== '1' } catch { return true }
+  try {
+    const outcome = localStorage.getItem('bolhaq-guide-complete')
+    return outcome !== '1' && outcome !== 'completed' && outcome !== 'skipped'
+  } catch { return true }
 }
 
 type ToolView = ReportView | { view: 'backup' }
@@ -53,6 +61,10 @@ export default function App() {
   const [siteRequest, setSiteRequest] = useState<SiteRequest>()
   const [commandEdit, setCommandEdit] = useState({ text: '', version: 0 })
   const [guide, setGuide] = useState(false)
+  const [tourIndex, setTourIndex] = useState<number | null>(null)
+  const [tourPlayback, setTourPlayback] = useState<PlaybackResult>()
+  const tourTrigger = useRef<HTMLButtonElement>(null)
+  const tourPlaybackVersion = useRef(0)
   const [feedback, setFeedback] = useState<VoiceFeedback>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
   const [lastSavedId, setLastSavedId] = useState<string>()
@@ -65,6 +77,12 @@ export default function App() {
   const t = language.messages
   const w = wageTools(locale)
 
+  const stopTourAudio = useCallback((clearStatus = true) => {
+    tourPlaybackVersion.current++
+    tourNarration.cancel()
+    if (clearStatus) setTourPlayback(undefined)
+  }, [])
+
   useEffect(() => {
     let mounted = true
     textToSpeech.prime()
@@ -74,13 +92,16 @@ export default function App() {
     return () => {
       mounted = false
       recognition.current?.cancel()
+      speechToText.cancel()
+      stopTourAudio(false)
       textToSpeech.cancel()
     }
-  }, [])
+  }, [stopTourAudio])
   useEffect(() => { document.documentElement.lang = locale }, [locale])
   useEffect(() => {
     const sync = () => {
       document.documentElement.toggleAttribute('data-inactive', document.hidden)
+      if (document.hidden) stopTourAudio()
       // A permission prompt can interrupt page visibility while the microphone is opening.
       if (document.hidden && capturing.current && recognition.current) {
         recognition.current.cancel()
@@ -95,9 +116,10 @@ export default function App() {
       document.removeEventListener('visibilitychange', sync)
       document.documentElement.removeAttribute('data-inactive')
     }
-  }, [])
+  }, [stopTourAudio])
 
   function cancelSpeech() {
+    stopTourAudio()
     recognition.current?.cancel()
     recognition.current = null
     capturing.current = false
@@ -107,8 +129,11 @@ export default function App() {
   }
 
   function changeLanguage(next: Locale) {
+    if (next === locale) return
     cancelSpeech()
+    speechToText.cancel()
     setLocale(next)
+    if (tourIndex !== null) playTour(tourIndex, next)
     setFeedback({ status: 'idle' })
     try { localStorage.setItem('bolhaq-language', next) } catch { /* Language still applies to this session. */ }
   }
@@ -127,9 +152,42 @@ export default function App() {
     setTool(next)
   }
 
-  function dismissGuide() {
+  function playTour(index: number, languageCode: Locale) {
+    stopTourAudio()
+    if (recognition.current || document.hidden) return
+    playbackVersion.current++
+    textToSpeech.cancel()
+    setPlayback(undefined)
+    const version = tourPlaybackVersion.current
+    const step = tourSteps[index]
+    void tourNarration.play(step, languageCode, onboarding(languageCode).steps[step][1]).then(result => {
+      if (version === tourPlaybackVersion.current) setTourPlayback(result)
+    })
+  }
+
+  function startTour(trigger: HTMLButtonElement) {
+    cancelSpeech()
+    tourTrigger.current = trigger
+    setFeedback({ status: 'idle' })
     setGuide(false)
-    try { localStorage.setItem('bolhaq-guide-complete', '1') } catch { /* Dismissed for this session. */ }
+    moveTour(0)
+  }
+
+  function moveTour(index: number) {
+    setTourIndex(index)
+    playTour(index, locale)
+  }
+
+  function dismissGuide(outcome: 'completed' | 'skipped') {
+    stopTourAudio()
+    setGuide(false)
+    setTourIndex(null)
+    try { localStorage.setItem('bolhaq-guide-complete', outcome) } catch { /* Dismissed for this session. */ }
+    if (tourIndex !== null) requestAnimationFrame(() => {
+      const trigger = tourTrigger.current
+      if (trigger?.isConnected) trigger.focus()
+      else document.getElementById('voice-help-button')?.focus()
+    })
   }
 
   async function restoreBackup(content: string) {
@@ -191,6 +249,7 @@ export default function App() {
 
   function handleCommand(command: string, source: 'typed' | 'speech') {
     if (!ledger || lock.current) return
+    stopTourAudio()
     const parsed = interpretIntent(command, { worksites: ledger.employers, activeWorksiteId: ledger.activeId })
     const transcript = source === 'speech' ? parsed.original : undefined
     const message = parsed.issue && clarification[parsed.issue]
@@ -325,8 +384,10 @@ export default function App() {
         t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
         available={speechToText.available()} onMic={toggleMicrophone}
         onCancel={() => { cancelSpeech(); setFeedback({ status: 'idle' }) }}
-        onCommand={command => handleCommand(command, 'typed')} />
-      {guide && ledger && <VoiceGuide w={w} examples={language.examples} finished={ledger.work.length > 0} onDismiss={dismissGuide} />}
+        onCommand={command => handleCommand(command, 'typed')}
+        tourLabel={ledger && tourIndex === null ? onboarding(locale).restart : undefined} onTour={startTour} />
+      {import.meta.env.DEV && speechDebugEnabled() && <SpeechDiagnostics locale={locale} />}
+      {guide && ledger && <VoiceGuide w={w} locale={locale} onStart={startTour} onDismiss={() => dismissGuide('skipped')} />}
       {ledger && <div className="workspace">
         <div className="wage-summary">
           <EmployerCard t={t} locale={locale} ledger={ledger} ready={!saving} onSelect={id => void selectEmployer(id)}
@@ -346,14 +407,20 @@ export default function App() {
             { view: 'statement', Icon: FileText }, { view: 'reminder', Icon: MessageSquareText },
             { view: 'overview', Icon: LayoutList }, { view: 'backup', Icon: DatabaseBackup },
           ] as const).map(({ view, Icon }) => <button key={view} type="button" className="button"
+            data-tour-target={view === 'overview' ? 'reports' : undefined}
             disabled={saving} onClick={() => openTool(view === 'backup' ? { view } : { view, siteId: ledger.activeId ?? undefined })}>
-            <Icon size={18} aria-hidden="true" />{w[view]}
+            <Icon size={18} aria-hidden="true" /><span>{w[view]}</span>
           </button>)}
         </div>
       </section>}
       <LocalFooter t={t} />
     </main>
-    <EntryDialog editor={editor} t={t} locale={locale} employerName={employerName} employers={ledger?.employers ?? []}
+    {tourIndex !== null && !editor && !tool && !siteRequest &&
+      <GuidedTour index={tourIndex} locale={locale} example={language.examples[0]} t={t} playback={tourPlayback}
+        busy={feedback.status === 'starting' || feedback.status === 'listening' || feedback.status === 'processing'}
+        onReplay={() => playTour(tourIndex, locale)} onMove={moveTour} onExit={dismissGuide} />}
+    <EntryDialog editor={editor}
+      tourNote={tourIndex !== null && ['mic', 'review'].includes(tourSteps[tourIndex]) ? onboarding(locale).reviewNote : undefined} t={t} locale={locale} employerName={employerName} employers={ledger?.employers ?? []}
       transcript={feedback.transcript} saving={saving}
       onRetry={feedback.editableCommand ? () => editCommand(feedback.editableCommand!) : undefined}
       onChange={patch => setEditor(previous => previous && { ...previous, draft: { ...previous.draft, ...patch }, error: undefined })}

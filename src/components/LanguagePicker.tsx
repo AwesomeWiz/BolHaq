@@ -43,7 +43,7 @@ export function LanguagePicker({ locale, label, onSelect }: { locale: Locale; la
   }
 
   return <div className="language-picker" ref={root}>
-    <button type="button" className="button language-trigger" ref={trigger} aria-label={`${label}: ${languages[selected].label}`}
+    <button type="button" className="button language-trigger" data-tour-target="language" ref={trigger} aria-label={`${label}: ${languages[selected].label}`}
       aria-haspopup="listbox" aria-expanded={open} aria-controls={id}
       onClick={() => open ? dismiss() : show()}
       onKeyDown={event => {

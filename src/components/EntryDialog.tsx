@@ -35,10 +35,11 @@ function EntryField({ draft, field, t, reviewing, onChange }: {
   </label>
 }
 
-export function EntryDialog({ editor, t, locale, employerName, employers, transcript, saving, onChange, onReview, onEdit, onConfirm, onClose, onRetry }: {
+export function EntryDialog({ editor, t, locale, employerName, employers, transcript, saving, onChange, onReview, onEdit, onConfirm, onClose, onRetry, tourNote }: {
   editor: Editor | null; t: Messages; locale: Locale; employerName: string; saving: boolean
   employers: readonly Employer[]
   transcript?: string
+  tourNote?: string
   onRetry?(): void
   onChange(patch: Partial<Draft>): void
   onReview(replace?: boolean): void
@@ -110,7 +111,8 @@ export function EntryDialog({ editor, t, locale, employerName, employers, transc
         <button type="button" className="button close-button" aria-label={t.closeDialog} onClick={closeSheet}
           disabled={blocked}><X size={22} aria-hidden="true" /></button>
       </div>
-      {reviewing && <div className="confirmation-amount">
+      {reviewing && tourNote && <p className="tour-review-note">{tourNote}</p>}
+      {reviewing && <div className="confirmation-amount" data-tour-highlight={Boolean(tourNote) || undefined}>
         <span>{amountLabel}</span><strong className="confirmation-value">{displayAmount ? money(displayAmount, locale) : '—'}</strong>
       </div>}
       {draft.kind !== 'employer' && !chooseWorksite && <p className="dialog-employer">{t.worksite} · <strong>{employerName}</strong></p>}
