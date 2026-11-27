@@ -5,6 +5,7 @@ import '@fontsource-variable/sora'
 import '@fontsource-variable/noto-sans-malayalam'
 import '@fontsource-variable/noto-sans-devanagari'
 import './styles/app.css'
+import './styles/wage-tools.css'
 import App from './App'
 
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)

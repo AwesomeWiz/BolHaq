@@ -67,6 +67,7 @@ export const en = {
   "emptySpeech": "No speech was recognized. Try again or type.",
   "speechLanguage": "Speech recognition for this language is unavailable here. You can type instead.",
   "speechError": "Could not start or complete recognition. Try again or type.",
+  "speechInterrupted": "Recording was interrupted. Tap the microphone to try again.",
   "local": "Saved on this device",
   "speakBalance": "Read balance aloud",
   "voiceUnavailable": "No matching voice is available on this device.",

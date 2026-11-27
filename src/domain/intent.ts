@@ -1,10 +1,13 @@
 import { localDate, normalizeDigits, readPaise, validDate } from './ledger'
+import { reportCommand } from './reportCommands'
+import type { ReportRequest } from './reportCommands'
 
 type Action =
   | { intent: 'SET_DAILY_WAGE'; parameters: { rate: number | null } }
   | { intent: 'RECORD_PAYMENT'; parameters: { amount: number | null } }
   | { intent: 'RECORD_WORK'; parameters: { days: number | null; date: string | null } }
   | { intent: 'CREATE_EMPLOYER'; parameters: { name: string; rate: number | null } }
+  | { intent: 'OPEN_REPORT'; parameters: ReportRequest }
   | { intent: 'QUERY_BALANCE' | 'UNKNOWN'; parameters: Record<string, never> }
 
 type Details = {
@@ -84,8 +87,10 @@ export const intentParser: VoiceIntentParser = {
     const command = original.toLowerCase()
     function result(action: Action, missing: Details['missing'] = [], ambiguity: Details['ambiguity'] = null): ParsedIntent {
       return { ...action, transcript, missing, ambiguity,
-        requiresConfirmation: action.intent !== 'QUERY_BALANCE' && action.intent !== 'UNKNOWN' }
+        requiresConfirmation: !['QUERY_BALANCE', 'OPEN_REPORT', 'UNKNOWN'].includes(action.intent) }
     }
+    const report = reportCommand(original, today)
+    if (report) return result({ intent: 'OPEN_REPORT', parameters: report })
     if (/^(?:how much (?:money )?(?:am i owed|is outstanding|do i have left)|(?:check|show(?: me)?) (?:my )?(?:outstanding wages|balance)|എനിക്ക് (?:ഇനി )?എത്ര (?:രൂപ )?(?:കിട്ടാനുണ്ട്|ബാക്കിയുണ്ട്)|(?:मेरे )?कितने पैसे बाकी हैं|कितनी मज़दूरी बाकी है)$/u.test(command)) {
       return result({ intent: 'QUERY_BALANCE', parameters: {} })
     }

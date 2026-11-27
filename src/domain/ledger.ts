@@ -70,17 +70,17 @@ export function workOn(ledger: Ledger, employerId: string, date: string) {
   return ledger.work.find(entry => entry.employerId === employerId && entry.date === date)
 }
 
-export function totals(ledger: Ledger, employerId: string) {
+export function totals(ledger: Pick<Ledger, 'work' | 'payments'>, employerId: string, range?: { from?: string; to: string }) {
   let days = 0
   let earned = 0
   let paid = 0
   for (const entry of ledger.work) {
-    if (entry.employerId !== employerId) continue
+    if (entry.employerId !== employerId || range && (entry.date > range.to || entry.date < (range.from ?? ''))) continue
     days += entry.days
     earned += entry.rate * entry.days
   }
   for (const entry of ledger.payments) {
-    if (entry.employerId === employerId) paid += entry.amount
+    if (entry.employerId === employerId && (!range || entry.date <= range.to && entry.date >= (range.from ?? ''))) paid += entry.amount
   }
   return { days, earned, paid, balance: earned - paid }
 }

@@ -1,5 +1,6 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase } from 'idb'
+import { readBackup } from '../domain/backup'
 import { applyConfirmed, emptyLedger, LedgerError } from '../domain/ledger'
 import type { Ledger, Proposal } from '../domain/ledger'
 
@@ -40,6 +41,9 @@ export function createLedgerStore(name = 'bolhaq') {
     async read() { return (await (await db()).get('ledger', 'current')) ?? emptyLedger() },
     confirm(proposal: Proposal, confirmationId: string) {
       return update(ledger => applyConfirmed(ledger, proposal, confirmationId))
+    },
+    restore(content: string) {
+      return update(() => readBackup(content).ledger)
     },
     select(id: string) {
       return update(ledger => {
