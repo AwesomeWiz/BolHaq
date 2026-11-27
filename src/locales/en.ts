@@ -102,7 +102,12 @@ export const en = {
   "cloudNetworkError": "Could not reach the speech service. Check your connection.",
   "cloudPermissionError": "Microphone access was blocked. Check your browser permissions.",
   "cloudTtsQuota": "Balance reading limit reached. Try again later.",
-  "cloudTtsError": "Could not play the balance. The balance is shown above."
+  "cloudTtsError": "Could not play the balance. The balance is shown above.",
+  "cloudConsentTitle": "External Speech Processing",
+  "cloudConsentAccept": "Accept & Use Voice",
+  "cloudConsentDecline": "Decline",
+  "cloudProcessingBadge": "Sarvam Cloud AI",
+  "cloudConsentRevoke": "Voice privacy settings"
 }
 
 export type Messages = { [Key in keyof typeof en]: string }

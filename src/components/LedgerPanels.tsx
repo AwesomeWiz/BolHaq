@@ -11,7 +11,7 @@ export function AppHeader({ locale, t, onLanguage }: { locale: Locale; t: Messag
     <div className="shell header-inner">
       <div className="brand">
         <div className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></div>
-        <div><div className="wordmark" lang="en">BolHaq</div><div className="tagline">{t.tagline}</div></div>
+        <div className="brand-text"><div className="wordmark" lang="en">BolHaq</div><div className="tagline">{t.tagline}</div></div>
       </div>
       <LanguagePicker locale={locale} label={t.language} onSelect={onLanguage} />
     </div>

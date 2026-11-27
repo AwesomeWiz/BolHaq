@@ -104,5 +104,10 @@ export const hi: Messages = {
   "cloudNetworkError": "सेवा से जुड़ नहीं पाए। नेटवर्क जाँचें।",
   "cloudPermissionError": "माइक्रोफ़ोन की अनुमति नहीं मिली। ब्राउज़र की अनुमतियाँ जाँचें।",
   "cloudTtsQuota": "बकाया सुनने की सीमा पूरी हुई। बाद में कोशिश करें।",
-  "cloudTtsError": "बकाया नहीं सुना जा सका। ऊपर देखें।"
+  "cloudTtsError": "बकाया नहीं सुना जा सका। ऊपर देखें।",
+  "cloudConsentTitle": "बाहरी आवाज़ पहचान सेवा",
+  "cloudConsentAccept": "स्वीकार करें और बोलें",
+  "cloudConsentDecline": "अस्वीकार करें",
+  "cloudProcessingBadge": "Sarvam क्लाउड AI",
+  "cloudConsentRevoke": "आवाज़ गोपनीयता सेटिंग"
 }

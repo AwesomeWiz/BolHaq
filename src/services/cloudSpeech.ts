@@ -84,15 +84,18 @@ function isTranscriptResponse(value: unknown): value is { transcript: string } {
 }
 
 // Cloud recording session controller.
-// Manages MediaRecorder lifecycle, enforces 8-second cap, and handles cleanup.
+// Manages MediaRecorder lifecycle, AudioContext VAD, enforces limits, and handles cleanup.
 export interface CloudRecordingCallbacks {
   started(): void
+  sound?(active: boolean): void
   tick(elapsedMs: number): void
   stopped(blob: Blob, durationMs: number): void
-  failed(reason: 'permission' | 'format' | 'hardware' | 'interrupted'): void
+  failed(reason: 'permission' | 'format' | 'hardware' | 'interrupted' | 'emptySpeech'): void
 }
 
 export const MAX_RECORDING_MS = 8_000
+export const INITIAL_SILENCE_TIMEOUT_MS = 3_500
+export const SPEECH_TRAILING_SILENCE_MS = 1_300
 
 export function startCloudRecording(
   mimeType: string,
@@ -100,15 +103,27 @@ export function startCloudRecording(
 ): { stop(): void; cancel(): void } {
   let recorder: MediaRecorder | undefined
   let stream: MediaStream | undefined
+  let audioContext: AudioContext | undefined
+  let analyser: AnalyserNode | undefined
+  let vadTimer: ReturnType<typeof setInterval> | undefined
   let chunks: BlobPart[] = []
   let startTime = 0
   let tickTimer: ReturnType<typeof setInterval> | undefined
   let capTimer: ReturnType<typeof setTimeout> | undefined
+  let initialSilenceTimer: ReturnType<typeof setTimeout> | undefined
+  let trailingSilenceTimer: ReturnType<typeof setTimeout> | undefined
+  let hasSpoken = false
   let done = false
 
-  function releaseMic() {
+  function releaseResources() {
     clearInterval(tickTimer)
+    clearInterval(vadTimer)
     clearTimeout(capTimer)
+    clearTimeout(initialSilenceTimer)
+    clearTimeout(trailingSilenceTimer)
+    try { audioContext?.close() } catch { /* Ignore */ }
+    audioContext = undefined
+    analyser = undefined
     stream?.getTracks().forEach(track => track.stop())
     stream = undefined
   }
@@ -116,16 +131,20 @@ export function startCloudRecording(
   function finish(blob?: Blob, durationMs?: number) {
     if (done) return
     done = true
-    releaseMic()
+    releaseResources()
     if (blob && durationMs !== undefined) {
-      callbacks.stopped(blob, durationMs)
+      if (blob.size === 0) {
+        callbacks.failed('emptySpeech')
+      } else {
+        callbacks.stopped(blob, durationMs)
+      }
     }
   }
 
   function cancel() {
     if (done) return
     done = true
-    releaseMic()
+    releaseResources()
     if (recorder && recorder.state !== 'inactive') {
       try { recorder.stop() } catch { /* Already stopped. */ }
     }
@@ -134,7 +153,60 @@ export function startCloudRecording(
   function stop() {
     if (done || !recorder || recorder.state !== 'recording') return
     clearTimeout(capTimer)
+    clearTimeout(initialSilenceTimer)
+    clearTimeout(trailingSilenceTimer)
     try { recorder.stop() } catch { /* Already stopped. */ }
+  }
+
+  // Setup Web Audio VAD for automatic speech end detection
+  function setupVAD(audioStream: MediaStream) {
+    if (typeof window === 'undefined') return
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AudioCtx) return
+
+    try {
+      audioContext = new AudioCtx()
+      const source = audioContext.createMediaStreamSource(audioStream)
+      analyser = audioContext.createAnalyser()
+      analyser.fftSize = 512
+      analyser.smoothingTimeConstant = 0.2
+      source.connect(analyser)
+
+      const bufferLength = analyser.frequencyBinCount
+      const dataArray = new Uint8Array(bufferLength)
+      const threshold = 18 // Adaptive voice activity threshold
+
+      vadTimer = setInterval(() => {
+        if (done || !analyser) return
+        analyser.getByteFrequencyData(dataArray)
+        let sum = 0
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i]
+        }
+        const average = sum / bufferLength
+        const isSpeaking = average > threshold
+
+        callbacks.sound?.(isSpeaking)
+
+        if (isSpeaking) {
+          if (!hasSpoken) {
+            hasSpoken = true
+            clearTimeout(initialSilenceTimer)
+          }
+          clearTimeout(trailingSilenceTimer)
+        } else if (hasSpoken) {
+          // If speech was previously active and now dropped below threshold,
+          // wait for trailing silence window before auto-stopping
+          if (!trailingSilenceTimer) {
+            trailingSilenceTimer = setTimeout(() => {
+              stop()
+            }, SPEECH_TRAILING_SILENCE_MS)
+          }
+        }
+      }, 80)
+    } catch {
+      // AudioContext unavailable or blocked: graceful fallback to manual stop and cap timer
+    }
   }
 
   void navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(s => {
@@ -146,7 +218,7 @@ export function startCloudRecording(
     try {
       recorder = new MediaRecorder(s, { mimeType })
     } catch {
-      releaseMic()
+      releaseResources()
       callbacks.failed('format')
       return
     }
@@ -159,22 +231,35 @@ export function startCloudRecording(
 
     recorder.onstart = () => {
       callbacks.started()
+      setupVAD(s)
+
       tickTimer = setInterval(() => {
         callbacks.tick(Date.now() - startTime)
       }, 100)
+
       capTimer = setTimeout(() => stop(), MAX_RECORDING_MS)
+
+      // Initial silence timer: if no speech begins within 3.5s, finish/stop
+      initialSilenceTimer = setTimeout(() => {
+        if (!hasSpoken) {
+          stop()
+        }
+      }, INITIAL_SILENCE_TIMEOUT_MS)
     }
 
     recorder.onstop = () => {
       clearInterval(tickTimer)
+      clearInterval(vadTimer)
       clearTimeout(capTimer)
+      clearTimeout(initialSilenceTimer)
+      clearTimeout(trailingSilenceTimer)
       const durationMs = Date.now() - startTime
       const blob = new Blob(chunks, { type: mimeType })
       finish(blob, durationMs)
     }
 
     recorder.onerror = () => {
-      if (!done) { done = true; releaseMic(); callbacks.failed('hardware') }
+      if (!done) { done = true; releaseResources(); callbacks.failed('hardware') }
     }
 
     recorder.start(250) // collect in 250 ms chunks
@@ -186,14 +271,18 @@ export function startCloudRecording(
   })
 
   const onVisibility = () => {
-    if (document.hidden && !done) { done = true; releaseMic(); callbacks.failed('interrupted') }
+    if (typeof document !== 'undefined' && document.hidden && !done) { done = true; releaseResources(); callbacks.failed('interrupted') }
   }
-  document.addEventListener('visibilitychange', onVisibility)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibility)
+  }
 
   return {
     stop,
     cancel() {
-      document.removeEventListener('visibilitychange', onVisibility)
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility)
+      }
       cancel()
     },
   }

@@ -257,6 +257,26 @@ it('groups dated activity and applies receipt styling only to payments', () => {
   expect(within(worked).getByText('₹4,200').classList.contains('receipt-text')).toBe(false)
 })
 
+it('maintains stable header branding and language selector layout in all supported languages', () => {
+  for (const lang of languages) {
+    const { unmount } = render(
+      <header className="app-header">
+        <div className="shell header-inner">
+          <div className="brand">
+            <div className="brand-mark" aria-hidden="true"><i /><i /><i /><i /><i /></div>
+            <div className="brand-text"><div className="wordmark" lang="en">BolHaq</div><div className="tagline">{lang.messages.tagline}</div></div>
+          </div>
+          <LanguagePicker locale={lang.code} label={lang.messages.language} onSelect={() => {}} />
+        </div>
+      </header>
+    )
+    expect(screen.getByText('BolHaq')).toBeTruthy()
+    expect(screen.getByText(lang.messages.tagline)).toBeTruthy()
+    expect(screen.getByRole('button', { name: new RegExp(lang.label) })).toBeTruthy()
+    unmount()
+  }
+})
+
 it('distinguishes settled and advance balances in text', () => {
   const earned = applyConfirmed(initial(), work, work.id)
   const settled = applyConfirmed(earned, { ...payment, amount: 420_000 }, payment.id)

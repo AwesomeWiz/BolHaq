@@ -104,5 +104,10 @@ export const ml: Messages = {
   "cloudNetworkError": "സേവനത്തിൽ എത്തിയില്ല. കണക്ഷൻ പരിശോധിക്കൂ.",
   "cloudPermissionError": "മൈക്രോഫോൺ അനുമതി ലഭിച്ചില്ല. ബ്രൗസർ അനുമതികൾ പരിശോധിക്കൂ.",
   "cloudTtsQuota": "ബാക്കി കൂലി വായിക്കാനുള്ള പരിധി തീർന്നു. പിന്നീട് ശ്രമിക്കൂ.",
-  "cloudTtsError": "ബാക്കി കൂലി വായിക്കാനായില്ല. മുകളിൽ കാണൂ."
+  "cloudTtsError": "ബാക്കി കൂലി വായിക്കാനായില്ല. മുകളിൽ കാണൂ.",
+  "cloudConsentTitle": "ബാഹ്യ ശബ്ദ തിരിച്ചറിയൽ സേവനം",
+  "cloudConsentAccept": "അംഗീകരിച്ച് സംസാരിക്കുക",
+  "cloudConsentDecline": "വേണ്ട",
+  "cloudProcessingBadge": "Sarvam ക്ലൗഡ് AI",
+  "cloudConsentRevoke": "ശബ്ദ സ്വകാര്യതാ ക്രമീകരണങ്ങൾ"
 }
