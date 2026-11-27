@@ -6,17 +6,17 @@ export const languages = [
   { code: 'en-IN', label: 'English', messages: en, examples: [
     'I worked today.', 'My daily wage is 700 rupees.', 'I received 2000 rupees.', 'How much money am I owed?',
     'Add worksite ABC Construction at 700 rupees per day.',
-    'Show my wage statement for this month.', 'Prepare a payment reminder.', 'How much am I owed across all worksites?',
+    'Show my wage statement for this month.', 'Prepare a payment reminder.', 'Show my total pending wages.',
   ] },
   { code: 'ml-IN', label: 'മലയാളം', messages: ml, examples: [
     'ഞാൻ ഇന്ന് ജോലി ചെയ്തു.', 'എന്റെ ദിവസക്കൂലി 700 രൂപയാണ്.', 'എനിക്ക് 2000 രൂപ കിട്ടി.', 'എനിക്ക് ഇനി എത്ര രൂപ കിട്ടാനുണ്ട്?',
     'കലൂർ ജോലിസ്ഥലം ചേർക്കുക, ദിവസക്കൂലി 700 രൂപ.',
-    'ഈ മാസത്തെ കൂലിയുടെ കണക്ക് കാണിക്കൂ.', 'ബാക്കി കൂലി ചോദിക്കാൻ ഒരു മെസേജ് തയ്യാറാക്കൂ.', 'എല്ലാ ജോലിസ്ഥലങ്ങളിലെയും കണക്ക് കാണിക്കൂ.',
+    'ഈ മാസത്തെ കൂലിയുടെ കണക്ക് കാണിക്കൂ.', 'ബാക്കി കൂലി ചോദിക്കാൻ ഒരു മെസേജ് തയ്യാറാക്കൂ.', 'എന്റെ ആകെ ബാക്കി കൂലി എത്ര?',
   ] },
   { code: 'hi-IN', label: 'हिंदी', messages: hi, examples: [
     'मैंने आज काम किया।', 'मेरी दिहाड़ी 700 रुपये है।', 'मुझे 2000 रुपये मिले।', 'मेरे कितने पैसे बाकी हैं?',
     'कलूर कार्यस्थल जोड़ें, दिहाड़ी 700 रुपये।',
-    'इस महीने का हिसाब दिखाओ।', 'बाकी मजदूरी के लिए संदेश बनाओ।', 'सभी काम की जगहों का हिसाब दिखाओ।',
+    'इस महीने का हिसाब दिखाओ।', 'बाकी मजदूरी के लिए संदेश बनाओ।', 'मेरी कुल बाकी मजदूरी कितनी है?',
   ] },
 ] as const
 

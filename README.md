@@ -51,7 +51,7 @@ For Malayalam playback, BolHaq primes the voice list and waits briefly for late-
 | --- | --- | --- | --- |
 | Wage statement | Show my wage statement for this month. | इस महीने का हिसाब दिखाओ। | ഈ മാസത്തെ കൂലിയുടെ കണക്ക് കാണിക്കൂ. |
 | Payment reminder | Prepare a payment reminder. | बाकी मजदूरी के लिए संदेश बनाओ। | ബാക്കി കൂലി ചോദിക്കാൻ ഒരു മെസേജ് തയ്യാറാക്കൂ. |
-| All worksites | Show my total outstanding wages. | सभी काम की जगहों का हिसाब दिखाओ। | എല്ലാ ജോലിസ്ഥലങ്ങളിലെയും കണക്ക് കാണിക്കൂ. |
+| All worksites | Show my total pending wages. | मेरी कुल बाकी मजदूरी कितनी है? | എന്റെ ആകെ ബാക്കി കൂലി എത്ര? |
 
 English also supports “Make a report for ABC Construction,” “Show my earnings for November,” and “Prepare a payment reminder for ABC Construction.” A month name without a year selects its most recent occurrence. If a spoken worksite name has zero or multiple matches, choose the intended worksite in the report. Opening a report leaves the active ledger worksite as selected.
 

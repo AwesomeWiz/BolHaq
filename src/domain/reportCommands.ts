@@ -4,6 +4,16 @@ export type ReportRequest =
 
 const months = 'january february march april may june july august september october november december'.split(' ')
 
+function isAggregateBalance(command: string) {
+  const english = /^(?:show (?:my )?(?:total|all) (?:pending|unpaid|outstanding) wages|how much payment is pending|how much am i (?:owed|old) across all worksites)$/i
+  const hindi = /^(?:मेरी कुल (?:बाकी|बकाया) मज़?दूरी (?:कितनी है|बताओ)|कुल कितनी मज़?दूरी (?:बाकी|बकाया) है|मुझे कुल कितने पैसे मिलने बाकी हैं|सभी (?:काम की जगहों|कार्यस्थलों) का हिसाब दिखाओ)$/u
+  if (english.test(command) || hindi.test(command)) return true
+
+  // Speech results may contain a legacy Malayalam joiner that NFKC leaves intact.
+  const malayalam = command.replace(/\u0d4d[\u200c\u200d]/gu, '\u0d4d')
+  return /^(?:(?:(?:എന്റെ|എൻറെ) )?(?:[ആआ]കെ|മൊത്തം) ബാക്കി കൂലി (?:എത്ര(?:യാണ്)?|കാണിക്കൂ)|എനിക്ക് (?:[ആआ]കെ|മൊത്തം) എത്ര കൂലി (?:കിട്ടാനുണ്ട|ബാക്കിയുണ്ട)(?:്|ു്?)|എല്ലാ ജോലിസ്ഥലങ്ങളിലെയും കണക്ക് കാണിക്കൂ)$/u.test(malayalam)
+}
+
 export function reportCommand(command: string, today: string): ReportRequest | undefined {
   const currentMonth = today.slice(0, 7)
   if (/^(?:show my wage statement(?: for this month)?|इस महीने का हिसाब दिखाओ|मेरी मज[़]?दूरी की रिपोर्ट दिखाओ|ഈ മാസത്തെ കൂലിയുടെ കണക്ക് കാണിക്കൂ|എന്റെ ശമ്പളത്തിന്റെ കണക്ക് കാണിക്കൂ)$/iu.test(command)) {
@@ -28,8 +38,6 @@ export function reportCommand(command: string, today: string): ReportRequest | u
   const reminder = /^(?:prepare a payment reminder for (.+)|ask (.+) for my remaining wages)$/i.exec(command)
   if (reminder) return { view: 'reminder', worksiteName: reminder[1] ?? reminder[2] }
 
-  if (/^(?:how much am i owed across all worksites|show my total outstanding wages|मुझे कुल कितने पैसे मिलने बाकी हैं|सभी काम की जगहों का हिसाब दिखाओ|എനിക്ക് ആകെ എത്ര കൂലി കിട്ടാനുണ്ട്|എല്ലാ ജോലിസ്ഥലങ്ങളിലെയും കണക്ക് കാണിക്കൂ)$/iu.test(command)) {
-    return { view: 'overview' }
-  }
+  if (isAggregateBalance(command)) return { view: 'overview' }
   if (/^how much did i earn this month$/i.test(command)) return { view: 'overview', month: currentMonth }
 }
