@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { DatabaseBackup, FileText, LayoutList, MessageSquareText } from 'lucide-react'
 import { AppHeader, EmployerCard, LocalFooter, ManualActions, TransactionList, WageBalance } from './components/LedgerPanels'
 import { EntryDialog } from './components/EntryDialog'
 import { BackupPanel } from './components/BackupPanel'
-import { VoiceGuide } from './components/VoiceGuide'
+import { GuidedTour, VoiceGuide } from './components/VoiceGuide'
+import { SpeechDiagnostics } from './components/SpeechDiagnostics'
+import { speechDebugEnabled } from './services/speechDiagnostics'
 import { VoicePanel } from './components/VoicePanel'
+import { CloudRecordingPanel } from './components/CloudRecordingPanel'
+import type { CloudRecordingFeedback } from './components/CloudRecordingPanel'
 import { ToolDialog } from './components/ToolDialog'
 import { WageReports } from './components/WageReports'
 import { WorksiteChoice } from './components/WorksiteChoice'
@@ -19,9 +23,19 @@ import type { Draft, Editor } from './features/proposals'
 import { languages, money } from './locales'
 import type { Locale } from './locales'
 import type { Messages } from './locales/en'
+import { onboarding, tourSteps } from './locales/onboarding'
+import { tourNarration } from './services/tourNarration'
+import type { PlaybackResult } from './services/readAloud'
 import { wageTools } from './locales/wageTools'
 import { speechToText } from './services/speech'
-import { spokenMoney, textToSpeech } from './services/readAloud'
+import {
+  speakBalanceHybrid, spokenMoney, textToSpeech,
+  cancelCloudTts,
+} from './services/readAloud'
+import {
+  cloudSpeechAvailable, startCloudRecording, supportedMimeType, transcribeBlob,
+} from './services/cloudSpeech'
+import type { CloudSpeechLocale } from './services/cloudSpeech'
 import { ledgerStore } from './services/storage'
 
 function preferredLocale(): Locale {
@@ -34,7 +48,20 @@ function preferredLocale(): Locale {
 
 function shouldShowGuide(ledger: Ledger) {
   if (ledger.employers.length) return false
-  try { return localStorage.getItem('bolhaq-guide-complete') !== '1' } catch { return true }
+  try {
+    const outcome = localStorage.getItem('bolhaq-guide-complete')
+    return outcome !== '1' && outcome !== 'completed' && outcome !== 'skipped'
+  } catch { return true }
+}
+
+/** Returns true when iOS + Hindi/Malayalam — locales where cloud STT is preferred. */
+function shouldOfferCloudSpeech(locale: Locale): locale is CloudSpeechLocale {
+  if (locale !== 'hi-IN' && locale !== 'ml-IN') return false
+  if (!cloudSpeechAvailable()) return false
+  // Heuristic: iOS Safari lacks a reliable Malayalam service, Hindi often times out.
+  // We always offer cloud on iOS for these locales. On Android/desktop the browser
+  // path usually works; we still offer cloud after specific failures.
+  return true
 }
 
 type ToolView = ReportView | { view: 'backup' }
@@ -43,6 +70,10 @@ const clarification: Record<InterpretationIssue, keyof Messages> = {
   amount: 'clarifyAmount', details: 'clarify', worksite: 'clarifyWorksite',
   worksiteAmbiguous: 'clarifyDuplicateWorksite', paymentState: 'clarifyPaymentState', oneAction: 'clarifyOneAction',
 }
+
+type CloudSttState =
+  | { active: false }
+  | { active: true; phase: 'consent' | 'recording' | 'review' | 'uploading' | 'error'; blob?: Blob; durationMs?: number; elapsedMs?: number; errorKey?: keyof Messages }
 
 export default function App() {
   const [locale, setLocale] = useState(preferredLocale)
@@ -53,17 +84,32 @@ export default function App() {
   const [siteRequest, setSiteRequest] = useState<SiteRequest>()
   const [commandEdit, setCommandEdit] = useState({ text: '', version: 0 })
   const [guide, setGuide] = useState(false)
+  const [tourIndex, setTourIndex] = useState<number | null>(null)
+  const [tourPlayback, setTourPlayback] = useState<PlaybackResult>()
+  const tourTrigger = useRef<HTMLButtonElement>(null)
+  const tourPlaybackVersion = useRef(0)
+  const [malayalamSpeechBlocked, setMalayalamSpeechBlocked] = useState(false)
   const [feedback, setFeedback] = useState<VoiceFeedback>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
   const [lastSavedId, setLastSavedId] = useState<string>()
   const [playback, setPlayback] = useState<keyof Messages>()
+  const [cloudStt, setCloudStt] = useState<CloudSttState>({ active: false })
   const lock = useRef(false)
   const playbackVersion = useRef(0)
   const recognition = useRef<ReturnType<typeof speechToText.listen> | null>(null)
   const capturing = useRef(false)
+  const cloudRecordingRef = useRef<{ stop(): void; cancel(): void } | null>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
   const language = languages.find(option => option.code === locale) ?? languages[0]
   const t = language.messages
   const w = wageTools(locale)
+  const micBlocked = locale === 'ml-IN' && malayalamSpeechBlocked
+
+  const stopTourAudio = useCallback((clearStatus = true) => {
+    tourPlaybackVersion.current++
+    tourNarration.cancel()
+    if (clearStatus) setTourPlayback(undefined)
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -74,19 +120,28 @@ export default function App() {
     return () => {
       mounted = false
       recognition.current?.cancel()
+      speechToText.cancel()
+      stopTourAudio(false)
       textToSpeech.cancel()
+      cancelCloudTts()
+      cloudRecordingRef.current?.cancel()
+      uploadAbortRef.current?.abort()
     }
-  }, [])
+  }, [stopTourAudio])
   useEffect(() => { document.documentElement.lang = locale }, [locale])
   useEffect(() => {
     const sync = () => {
       document.documentElement.toggleAttribute('data-inactive', document.hidden)
-      // A permission prompt can interrupt page visibility while the microphone is opening.
+      if (document.hidden) stopTourAudio()
       if (document.hidden && capturing.current && recognition.current) {
         recognition.current.cancel()
         recognition.current = null
         capturing.current = false
         setFeedback({ status: 'error', message: 'speechInterrupted' })
+      }
+      // Cancel cloud recording if page hides.
+      if (document.hidden && cloudStt.active) {
+        cancelCloudSession()
       }
     }
     sync()
@@ -95,20 +150,34 @@ export default function App() {
       document.removeEventListener('visibilitychange', sync)
       document.documentElement.removeAttribute('data-inactive')
     }
-  }, [])
+  }, [stopTourAudio, cloudStt.active])
+
+  function cancelCloudSession() {
+    uploadAbortRef.current?.abort()
+    uploadAbortRef.current = null
+    cloudRecordingRef.current?.cancel()
+    cloudRecordingRef.current = null
+    setCloudStt({ active: false })
+  }
 
   function cancelSpeech() {
+    stopTourAudio()
     recognition.current?.cancel()
     recognition.current = null
     capturing.current = false
     playbackVersion.current++
     textToSpeech.cancel()
+    cancelCloudTts()
     setPlayback(undefined)
+    cancelCloudSession()
   }
 
   function changeLanguage(next: Locale) {
+    if (next === locale) return
     cancelSpeech()
+    speechToText.cancel()
     setLocale(next)
+    if (tourIndex !== null) playTour(tourIndex, next)
     setFeedback({ status: 'idle' })
     try { localStorage.setItem('bolhaq-language', next) } catch { /* Language still applies to this session. */ }
   }
@@ -127,9 +196,42 @@ export default function App() {
     setTool(next)
   }
 
-  function dismissGuide() {
+  function playTour(index: number, languageCode: Locale) {
+    stopTourAudio()
+    if (recognition.current || document.hidden) return
+    playbackVersion.current++
+    textToSpeech.cancel()
+    setPlayback(undefined)
+    const version = tourPlaybackVersion.current
+    const step = tourSteps[index]
+    void tourNarration.play(step, languageCode, onboarding(languageCode).steps[step][1]).then(result => {
+      if (version === tourPlaybackVersion.current) setTourPlayback(result)
+    })
+  }
+
+  function startTour(trigger: HTMLButtonElement) {
+    cancelSpeech()
+    tourTrigger.current = trigger
+    setFeedback({ status: 'idle' })
     setGuide(false)
-    try { localStorage.setItem('bolhaq-guide-complete', '1') } catch { /* Dismissed for this session. */ }
+    moveTour(0)
+  }
+
+  function moveTour(index: number) {
+    setTourIndex(index)
+    playTour(index, locale)
+  }
+
+  function dismissGuide(outcome: 'completed' | 'skipped') {
+    stopTourAudio()
+    setGuide(false)
+    setTourIndex(null)
+    try { localStorage.setItem('bolhaq-guide-complete', outcome) } catch { /* Dismissed for this session. */ }
+    if (tourIndex !== null) requestAnimationFrame(() => {
+      const trigger = tourTrigger.current
+      if (trigger?.isConnected) trigger.focus()
+      else document.getElementById('voice-help-button')?.focus()
+    })
   }
 
   async function restoreBackup(content: string) {
@@ -175,22 +277,40 @@ export default function App() {
     const reply = label + template.replace('{amount}', money(Math.abs(balance), locale))
     const narration = label + template.replace('{amount}', spokenMoney(Math.abs(balance), locale))
     const version = ++playbackVersion.current
+    const balanceType = balance === 0 ? 'settled' : balance < 0 ? 'advance' : 'outstanding'
+    const paise = Math.abs(balance)
     if (explicit) {
       setFeedback({ status: 'idle' })
       setPlayback('reading')
     } else {
       setFeedback({ status: 'success', transcript, reply })
     }
-    void textToSpeech.speak(narration, locale).then(result => {
-      if (version !== playbackVersion.current || result === 'cancelled') return
-      const message = result === 'unavailable' ? 'voiceUnavailable' : result === 'failed' ? 'playbackError' : undefined
-      if (explicit) setPlayback(message)
-      else if (message) setFeedback({ status: 'success', transcript, reply, message })
-    })
+
+    // Use hybrid TTS (browser → Bulbul fallback for hi-IN/ml-IN).
+    if (locale === 'hi-IN' || locale === 'ml-IN') {
+      void speakBalanceHybrid({ paise, balanceType }, locale, narration).then(result => {
+        if (version !== playbackVersion.current || result === 'cancelled') return
+        let message: keyof Messages | undefined
+        if (result === 'unavailable') message = 'voiceUnavailable'
+        else if (result === 'failed') message = 'playbackError'
+        else if (result === 'cloud-quota') message = 'cloudTtsQuota'
+        else if (result === 'cloud-failed' || result === 'cloud-disabled') message = 'cloudTtsError'
+        if (explicit) setPlayback(message)
+        else if (message) setFeedback({ status: 'success', transcript, reply, message })
+      })
+    } else {
+      void textToSpeech.speak(narration, locale).then(result => {
+        if (version !== playbackVersion.current || result === 'cancelled') return
+        const message = result === 'unavailable' ? 'voiceUnavailable' : result === 'failed' ? 'playbackError' : undefined
+        if (explicit) setPlayback(message)
+        else if (message) setFeedback({ status: 'success', transcript, reply, message })
+      })
+    }
   }
 
   function handleCommand(command: string, source: 'typed' | 'speech') {
     if (!ledger || lock.current) return
+    stopTourAudio()
     const parsed = interpretIntent(command, { worksites: ledger.employers, activeWorksiteId: ledger.activeId })
     const transcript = source === 'speech' ? parsed.original : undefined
     const message = parsed.issue && clarification[parsed.issue]
@@ -240,7 +360,76 @@ export default function App() {
     setCommandEdit(previous => ({ text, version: previous.version + 1 }))
   }
 
+  // ---- Cloud STT flow ----
+
+  function openCloudRecording() {
+    // Show consent screen before any microphone access.
+    cancelSpeech()
+    setFeedback({ status: 'idle' })
+    setCloudStt({ active: true, phase: 'consent' })
+  }
+
+  function startCloudCapture() {
+    const mimeType = supportedMimeType()
+    if (!mimeType) {
+      setCloudStt({ active: true, phase: 'error', errorKey: 'cloudFormatError' })
+      return
+    }
+    setCloudStt({ active: true, phase: 'recording', elapsedMs: 0 })
+
+    cloudRecordingRef.current = startCloudRecording(mimeType, {
+      started() {
+        setCloudStt(prev => prev.active ? { ...prev, phase: 'recording', elapsedMs: 0 } : prev)
+      },
+      tick(elapsedMs) {
+        setCloudStt(prev => prev.active ? { ...prev, elapsedMs } : prev)
+      },
+      stopped(blob, durationMs) {
+        cloudRecordingRef.current = null
+        setCloudStt({ active: true, phase: 'review', blob, durationMs })
+      },
+      failed(reason) {
+        cloudRecordingRef.current = null
+        const errorKey: keyof Messages = reason === 'permission' ? 'cloudPermissionError'
+          : reason === 'format' ? 'cloudFormatError' : 'cloudServerError'
+        setCloudStt({ active: true, phase: 'error', errorKey })
+      },
+    })
+  }
+
+  async function sendCloudRecording() {
+    if (cloudStt.active && cloudStt.phase === 'review' && cloudStt.blob) {
+      const blob = cloudStt.blob
+      setCloudStt({ active: true, phase: 'uploading' })
+      const controller = new AbortController()
+      uploadAbortRef.current = controller
+
+      const cloudLocale = locale as CloudSpeechLocale
+      const result = await transcribeBlob(blob, cloudLocale, controller.signal)
+      uploadAbortRef.current = null
+
+      if (controller.signal.aborted) return  // cancelled
+      setCloudStt({ active: false })
+
+      if (result.status === 'transcript') {
+        handleCommand(result.text, 'speech')
+      } else {
+        const errorKeyMap: Record<string, keyof Messages> = {
+          quota: 'cloudQuota', disabled: 'cloudDisabled', timeout: 'cloudTimeout',
+          format: 'cloudFormatError', size: 'cloudFormatError', server: 'cloudServerError',
+          network: 'cloudNetworkError',
+        }
+        setFeedback({ status: 'error', message: errorKeyMap[result.code] ?? 'cloudServerError' })
+      }
+    }
+  }
+
   function toggleMicrophone() {
+    if (micBlocked) return
+
+    // If cloud recording panel is showing, treat mic tap as cancel.
+    if (cloudStt.active) { cancelCloudSession(); return }
+
     if (recognition.current) {
       recognition.current.stop()
       return
@@ -262,7 +451,16 @@ export default function App() {
       failed: message => {
         recognition.current = null
         capturing.current = false
+        if (message === 'speechServiceBlocked') setMalayalamSpeechBlocked(true)
         setFeedback({ status: 'error', message })
+
+        // After certain failures on hi-IN/ml-IN, automatically offer cloud path.
+        const cloudFail = message === 'speechServiceBlocked' || message === 'speechNoResult' ||
+          message === 'speechLanguage' || message === 'timeout'
+        if (cloudFail && shouldOfferCloudSpeech(locale)) {
+          // Slight delay so the error message renders before panel opens.
+          setTimeout(() => openCloudRecording(), 600)
+        }
       },
     })
   }
@@ -310,6 +508,11 @@ export default function App() {
 
   const employerName = ledger?.employers.find(employer => employer.id === editor?.draft.employerId)?.name ?? ''
 
+  // Cloud recording feedback adapter for CloudRecordingPanel.
+  const cloudFeedback: CloudRecordingFeedback = cloudStt.active
+    ? { phase: cloudStt.phase, elapsedMs: cloudStt.elapsedMs, durationMs: cloudStt.durationMs, errorKey: cloudStt.errorKey }
+    : { phase: 'consent' }
+
   return <>
     <AppHeader locale={locale} t={t} onLanguage={changeLanguage} />
     <main className="shell main-content">
@@ -323,10 +526,25 @@ export default function App() {
       </div>}
       <VoicePanel key={commandEdit.version} initialCommand={commandEdit.text} onEditCommand={editCommand}
         t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
-        available={speechToText.available()} onMic={toggleMicrophone}
+        available={speechToText.available()} micBlocked={micBlocked} onMic={toggleMicrophone}
         onCancel={() => { cancelSpeech(); setFeedback({ status: 'idle' }) }}
-        onCommand={command => handleCommand(command, 'typed')} />
-      {guide && ledger && <VoiceGuide w={w} examples={language.examples} finished={ledger.work.length > 0} onDismiss={dismissGuide} />}
+        onCommand={command => handleCommand(command, 'typed')}
+        tourLabel={ledger && tourIndex === null ? onboarding(locale).restart : undefined} onTour={startTour}
+        onCloudRecord={shouldOfferCloudSpeech(locale) ? openCloudRecording : undefined}
+        cloudRecordingAvailable={cloudSpeechAvailable() && shouldOfferCloudSpeech(locale)} />
+      {cloudStt.active && (
+        <CloudRecordingPanel
+          t={t}
+          feedback={cloudFeedback}
+          onConsent={startCloudCapture}
+          onStop={() => cloudRecordingRef.current?.stop()}
+          onSend={() => void sendCloudRecording()}
+          onDiscard={cancelCloudSession}
+          onCancel={cancelCloudSession}
+        />
+      )}
+      {import.meta.env.DEV && speechDebugEnabled() && <SpeechDiagnostics locale={locale} />}
+      {guide && ledger && <VoiceGuide w={w} locale={locale} onStart={startTour} onDismiss={() => dismissGuide('skipped')} />}
       {ledger && <div className="workspace">
         <div className="wage-summary">
           <EmployerCard t={t} locale={locale} ledger={ledger} ready={!saving} onSelect={id => void selectEmployer(id)}
@@ -346,14 +564,20 @@ export default function App() {
             { view: 'statement', Icon: FileText }, { view: 'reminder', Icon: MessageSquareText },
             { view: 'overview', Icon: LayoutList }, { view: 'backup', Icon: DatabaseBackup },
           ] as const).map(({ view, Icon }) => <button key={view} type="button" className="button"
+            data-tour-target={view === 'overview' ? 'reports' : undefined}
             disabled={saving} onClick={() => openTool(view === 'backup' ? { view } : { view, siteId: ledger.activeId ?? undefined })}>
-            <Icon size={18} aria-hidden="true" />{w[view]}
+            <Icon size={18} aria-hidden="true" /><span>{w[view]}</span>
           </button>)}
         </div>
       </section>}
       <LocalFooter t={t} />
     </main>
-    <EntryDialog editor={editor} t={t} locale={locale} employerName={employerName} employers={ledger?.employers ?? []}
+    {tourIndex !== null && !editor && !tool && !siteRequest &&
+      <GuidedTour index={tourIndex} locale={locale} example={language.examples[0]} t={t} playback={tourPlayback}
+        busy={feedback.status === 'starting' || feedback.status === 'listening' || feedback.status === 'processing'}
+        onReplay={() => playTour(tourIndex, locale)} onMove={moveTour} onExit={dismissGuide} />}
+    <EntryDialog editor={editor}
+      tourNote={tourIndex !== null && ['mic', 'review'].includes(tourSteps[tourIndex]) ? onboarding(locale).reviewNote : undefined} t={t} locale={locale} employerName={employerName} employers={ledger?.employers ?? []}
       transcript={feedback.transcript} saving={saving}
       onRetry={feedback.editableCommand ? () => editCommand(feedback.editableCommand!) : undefined}
       onChange={patch => setEditor(previous => previous && { ...previous, draft: { ...previous.draft, ...patch }, error: undefined })}

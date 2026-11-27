@@ -13,6 +13,10 @@ export type VoiceFeedback = {
   sound?: boolean
 }
 
+const retryableSpeech = new Set<keyof Messages>([
+  'denied', 'timeout', 'emptySpeech', 'speechUnavailable', 'speechNoResult', 'speechCapture', 'speechInterrupted', 'speechError',
+])
+
 const pattern = [10, 16, 25, 14, 34, 51, 29, 63, 44, 78, 55, 85, 64, 43, 71, 39]
 
 function Waveform({ reverse = false }: { reverse?: boolean }) {
@@ -41,11 +45,14 @@ function RecordingClock({ startedAt }: { startedAt: number }) {
   return <time className="recording-clock" dateTime={`PT${seconds}S`}>{time}</time>
 }
 
-export function VoicePanel({ t, examples, feedback, ready, available, initialCommand = '', onMic, onCancel, onCommand, onEditCommand }: {
+export function VoicePanel({ t, examples, feedback, ready, available, initialCommand = '', onMic, onCancel, onCommand, onEditCommand, tourLabel, onTour, micBlocked, onCloudRecord, cloudRecordingAvailable }: {
   t: Messages; examples: readonly string[]; feedback: VoiceFeedback; ready: boolean; available: boolean
-  initialCommand?: string
+  initialCommand?: string; micBlocked: boolean
   onMic(): void; onCancel(): void; onCommand(command: string): void
   onEditCommand(command: string): void
+  tourLabel?: string; onTour(trigger: HTMLButtonElement): void
+  onCloudRecord?: () => void
+  cloudRecordingAvailable?: boolean
 }) {
   const [typed, setTyped] = useState(Boolean(initialCommand))
   const [help, setHelp] = useState(false)
@@ -57,9 +64,15 @@ export function VoicePanel({ t, examples, feedback, ready, available, initialCom
   const buttonLabel = listening ? t.stop : status === 'starting' ? t.starting :
     status === 'processing' ? t.processing : t.tap
   const message = feedback.message ? t[feedback.message] :
-    status === 'idle' ? (available ? '' : t.unsupported) : status === 'error' ? t.unknown :
+    status === 'idle' ? (micBlocked ? t.speechServiceBlocked : available ? '' : t.unsupported) : status === 'error' ? t.unknown :
       (reply || status === 'success' || status === 'awaiting' ? t[status] : '')
   const Icon = listening ? Square : busy ? LoaderCircle : Mic
+
+  // Show cloud recording offer when mic is blocked or after relevant failures.
+  const showCloudOffer = cloudRecordingAvailable && onCloudRecord &&
+    (micBlocked || (status === 'error' && feedback.message &&
+      (feedback.message === 'speechServiceBlocked' || feedback.message === 'speechLanguage' ||
+       feedback.message === 'speechNoResult' || feedback.message === 'timeout')))
 
   useEffect(() => {
     if (!typed || busy) return
@@ -75,7 +88,7 @@ export function VoicePanel({ t, examples, feedback, ready, available, initialCom
     <div className="mic-stage">
       <Waveform />
       <div className="mic-ring">
-        <button type="button" className="mic-button" onClick={() => { if (!busy || listening) onMic() }} disabled={!ready}
+        <button type="button" className="mic-button" data-tour-target="mic" onClick={() => { if (!busy || listening) onMic() }} disabled={!ready || micBlocked}
           aria-disabled={status === 'processing' || status === 'starting' || undefined}
           aria-label={buttonLabel}>
           <Icon size={listening ? 27 : 39} strokeWidth={1.8} fill={listening ? 'currentColor' : 'none'} aria-hidden="true" />
@@ -98,17 +111,26 @@ export function VoicePanel({ t, examples, feedback, ready, available, initialCom
       </p>}
       {transcript && <p className="transcript"><span>{t.heard}</span>{transcript}</p>}
     </div>
+    {showCloudOffer && !busy && (
+      <button type="button" className="button primary cloud-offer-button" onClick={onCloudRecord}>
+        <Mic size={16} aria-hidden="true" />{t.cloudOfferHint}
+      </button>
+    )}
     {busy ? <button type="button" className="button voice-secondary" onClick={onCancel}>{t.cancel}</button> :
       <div className="voice-alternatives">
+        {status === 'error' && feedback.message && retryableSpeech.has(feedback.message) && available &&
+          !micBlocked && <button type="button" className="button voice-secondary" disabled={!ready} onClick={onMic}>{t.retry}</button>}
         {status === 'error' && feedback.editableCommand && <button type="button" className="button voice-secondary"
           onClick={() => onEditCommand(feedback.editableCommand!)}>{t.editCommand}</button>}
         <button className="button voice-secondary" type="button" aria-expanded={typed} aria-controls="typed-command"
           onClick={() => { setTyped(!typed); setHelp(false) }}><Keyboard size={18} aria-hidden="true" />{t.type}</button>
-        <button className="button voice-secondary" type="button" aria-expanded={help} aria-controls="voice-examples"
+        <button id="voice-help-button" className="button voice-secondary" type="button" aria-expanded={help} aria-controls="voice-examples"
           onClick={() => { setHelp(!help); setTyped(false) }}><CircleHelp size={18} aria-hidden="true" />{t.examples}</button>
       </div>}
     <div id="voice-examples" className="examples" hidden={!help || busy}>
       <ul>{examples.map(example => <li key={example}>{example}</li>)}</ul>
+      {tourLabel && <button type="button" className="button voice-secondary restart-tour"
+        onClick={event => onTour(event.currentTarget)}>{tourLabel}</button>}
     </div>
     <form id="typed-command" className="typed-form" hidden={!typed || busy} onSubmit={event => {
       event.preventDefault()

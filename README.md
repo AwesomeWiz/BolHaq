@@ -165,6 +165,38 @@ Guest data is specific to this browser profile, device and origin. Development a
 
 Automated tests exercise the parser and ledger independently of a real microphone. Record device speech results separately.
 
+## Guided tour and narration
+
+On a new ledger, choose **Start guided tour**. The five steps highlight the language selector, Add worksite, microphone, confirmation, and wage tools. The review step uses an example when a real confirmation is unavailable. **Skip** and **Finish** remember separate outcomes in this browser. Use **What can I say?** to restart the tour.
+
+The tour prefers the exact browser voice locale (`en-IN`, `hi-IN`, or `ml-IN`), then another voice in the same language. It waits briefly for voices to load. Replay is available if playback is blocked, and the guidance remains visible if a compatible voice is missing. No narration recordings ship with this branch. To provide a recorded fallback, place a real recording under `public/audio/onboarding/<locale>/`, register its filename for the matching step in [tourNarration.ts](src/services/tourNarration.ts), and verify playback and replay on iPhone and Android.
+
+## iPhone speech investigation
+
+The reported iOS 26.6 tests in Safari and Chrome Incognito had working English, unreliable Hindi, and failing Malayalam with microphone access already enabled. The deployed task-002C adapter set the correct locale before starting, but grouped `service-not-allowed` with `not-allowed` in the same permission message. That message alone cannot identify the error the phone returned. The new adapter clears and replaces sessions, separates browser/service, audio-capture and language errors, and preserves the same locale through the explicit retry. [Web Speech API error definitions](https://webaudio.github.io/web-speech-api/#speechrecognitionerrorcode)
+
+WebKit introduced its speech recognition using the Siri engine. Apple's iOS 26 Dictation list includes Indian English and Hindi, but omits Malayalam. This makes a language availability limitation plausible for Malayalam. Web Speech availability and the cause of the Hindi failure still require a device trace. A website seeing the constructor can still encounter language and service failures. WebKit also tracks reports of recognition stalling across sessions on iOS. Compare cold-start, repeat, and post-narration attempts before drawing a conclusion about the device. [WebKit SpeechRecognition announcement](https://webkit.org/blog/11648/new-webkit-features-in-safari-14-1/#web-speech-api) · [Apple iOS 26 feature availability](https://www.apple.com/ae/ios/feature-availability/#dictation) · [WebKit issue 321436](https://bugs.webkit.org/show_bug.cgi?id=321436)
+
+### Verify on a real iPhone
+
+1. Run this branch's Vite development server on a trusted HTTPS origin reachable from the iPhone. For a temporary Cloudflare URL, run `npm run dev -- --host 127.0.0.1 --port 5175 --strictPort` and `cloudflared tunnel --url http://127.0.0.1:5175 --http-host-header 127.0.0.1:5175` in separate terminals. Use the generated HTTPS URL and test data. Stopping the tunnel closes the URL. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+
+   For a local Wi-Fi test, use a development certificate for the computer's LAN address or hostname. Trust your own development CA on the test phone, and keep its private key on the computer. Vite accepts the certificate and key paths through `BOLHAQ_DEV_TLS_CERT` and `BOLHAQ_DEV_TLS_KEY`. Run `npm run dev -- --host 0.0.0.0` on the test network. [mkcert instructions](https://github.com/FiloSottile/mkcert) · [Apple certificate trust instructions](https://support.apple.com/en-ie/102390)
+2. Open the development HTTPS URL with `?speech-debug=1` in a normal Safari tab. Check that the panel shows **Secure context**. The panel also identifies the available recognition constructor. The diagnostic URL works with the development server. The production build omits the panel.
+3. Record the browser and iOS versions, Siri and Dictation settings, network, and site microphone setting. In order, try `I worked today.`, `मैंने आज काम किया।`, and `ഞാൻ ഇന്ന് ജോലി ചെയ്തു.` using the matching interface language. Try each twice, refresh while Hindi or Malayalam is selected, switch languages while the mic is waiting, and try again after tour narration. Repeat in Chrome's regular and Incognito tabs. Compare with Android Chrome when available.
+4. For each attempt, record the requested locale, last lifecycle event, raw error code and message, and whether the trace says a transcript was returned. Share only diagnostic rows from test phrases and omit any private information in browser-supplied error messages. The trace stores event metadata in memory, with no transcript text or recording. Refresh or choose **Clear diagnostics** to discard it.
+5. Check Malayalam and Hindi labels at the phone's standard and larger text sizes. Walk through the tour, switch languages during it, and verify that starting the microphone stops narration. Review and cancel a test command, then refresh and check the test ledger for unintended entries.
+
+### Optional external recognition assessment
+
+Defer an external fallback until device traces show a repeatable browser limitation and a consented trial can measure improvement. Saaras lists Indian English, Hindi and Malayalam. Its published pay-as-you-go rate is ₹0.49 per audio minute and 60 real-time REST requests per minute per account. Uploading adds network latency. Measure end-of-speech to editable confirmation over Wi-Fi and mobile data, and compare transcript accuracy on consented examples with amounts and worksite names. [Saaras language support](https://docs.sarvam.ai/api/api-guides-tutorials/models/saaras) · [Sarvam pricing and rate limits](https://docs.sarvam.ai/api/getting-started/pricing)
+
+A trial would need explicit consent before audio leaves the device, a clear explanation of provider processing and retention, and HTTPS microphone capture with `MediaRecorder.isTypeSupported()` to check available formats such as AAC/MP4 and Opus/WebM. Verify the selected format and encoding with the provider on both mobile platforms. Use a server-side proxy for the credential, short clip limits, quotas and deletion rules. Give users a typed or manual path after refusal, timeouts, format errors or rate limits. Keep the transcript in the existing confirmation flow. [WebKit MediaRecorder format support](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/) · [Sarvam audio guidance](https://docs.sarvam.ai/api/api-guides-tutorials/speech-to-text/overview) · [Sarvam retention settings](https://docs.sarvam.ai/api/platform/faq)
+
+### Repeat the desktop browser checks
+
+Run `npm run preview -- --port 4174`, then `node scripts/check-mobile.mjs`. The script uses `playwright-core`, its Chromium and WebKit browsers, and `axe-core` from a separate QA installation. Set `NODE_PATH` to that installation's `node_modules` directory. You can set `BOLHAQ_QA_CHROME` to use an installed Chrome executable. The script checks both browser engines at 320, 360, 375, 390, 430, 768 and 1440 CSS pixels and doubles the root text size. It measures rendered layout and exercises scripted speech events. Actual iPhone audio is covered by the device checklist above.
+
 ## Known limitations
 
 - Recognition and playback depend on the browser and OS. Verify the updated recording controls and Malayalam pronunciation on the devices used for the demo.

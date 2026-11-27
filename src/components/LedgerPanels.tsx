@@ -50,7 +50,7 @@ export function EmployerCard({ t, locale, ledger, ready, onSelect, onAdd }: {
   const employer = ledger.employers.find(item => item.id === ledger.activeId)
   const agreement = employer && currentAgreement(ledger, employer.id)
   return <section className="employer-card" aria-labelledby="employer-title">
-    <div className="employer-row">
+    <div className="employer-row" data-empty={!employer || undefined}>
       <div className="section-icon"><Building2 size={21} aria-hidden="true" /></div>
       <div className="employer-heading">
         <h2 id="employer-title">{t.worksite}</h2>
@@ -62,7 +62,7 @@ export function EmployerCard({ t, locale, ledger, ready, onSelect, onAdd }: {
           <ChevronDown size={15} aria-hidden="true" />
         </div>}
       </div>
-      <button type="button" className="button add-worksite" onClick={onAdd} disabled={!ready}
+      <button type="button" className="button add-worksite" data-tour-target="site" onClick={onAdd} disabled={!ready}
         aria-label={t.addEmployer} title={t.addEmployer}>
         <Plus size={21} aria-hidden="true" />{!employer && <span>{t.addEmployer}</span>}
       </button>
