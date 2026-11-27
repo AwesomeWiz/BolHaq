@@ -1,0 +1,49 @@
+name: Verify BolHaq
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - name: Build and start Docker Compose
+        run: docker compose up --build -d
+      - name: Verify the application over HTTP
+        shell: bash
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8080/ --output /tmp/bolhaq.html; then
+              asset="$(sed -nE 's/.*<script[^>]*src="([^"]+)".*/\1/p' /tmp/bolhaq.html)"
+              if grep -q '<title>BolHaq</title>' /tmp/bolhaq.html &&
+                 [[ "$asset" == /assets/*.js ]] &&
+                 curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:8080$asset" --output /dev/null; then
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "BolHaq did not serve its HTML and JavaScript within the startup window."
+          exit 1
+      - name: Print Compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop containers
+        if: always()
+        run: docker compose down --volumes --remove-orphans
