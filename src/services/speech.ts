@@ -1,6 +1,6 @@
 import type { Locale } from '../locales'
 
-export type SpeechIssue = 'unsupported' | 'denied' | 'timeout' | 'emptySpeech' | 'speechLanguage' | 'speechError'
+export type SpeechIssue = 'unsupported' | 'denied' | 'timeout' | 'emptySpeech' | 'speechLanguage' | 'speechError' | 'speechInterrupted'
 interface Recognition {
   lang: string
   continuous: boolean
@@ -75,7 +75,7 @@ export const speechToText: SpeechToTextProvider = {
       callbacks.failed(issue)
     }
     const stop = () => {
-      if (finished || !session) return
+      if (finished || !session || phase === 'processing') return
       processing()
       try { session.stop() } catch { fail('speechError') }
     }
@@ -109,6 +109,7 @@ export const speechToText: SpeechToTextProvider = {
         if (error === 'not-allowed' || error === 'service-not-allowed') fail('denied')
         else if (error === 'no-speech') fail('emptySpeech')
         else if (error === 'language-not-supported') fail('speechLanguage')
+        else if (error === 'aborted') fail('speechInterrupted')
         else fail('speechError')
       }
       timer = setTimeout(() => fail('timeout'), 12_000)

@@ -10,6 +10,7 @@ class BrowserRecognition {
   onsoundstart?: () => void
   onsoundend?: () => void
   onend?: () => void
+  onerror?: (event: { error: string }) => void
   onresult?: (event: { results: { transcript: string }[][] }) => void
   start = vi.fn()
   stop = vi.fn()
@@ -39,6 +40,7 @@ it('uses browser listening and sound events, processes stop once, and returns on
   recognition.onsoundend?.()
   expect(events.sound.mock.calls).toEqual([[true], [false]])
   controls.stop()
+  controls.stop()
   expect(recognition.stop).toHaveBeenCalledOnce()
   recognition.onaudioend?.()
   expect(events.processing).toHaveBeenCalledOnce()
@@ -60,4 +62,36 @@ it('aborts and clears timeout without reporting a transcript when cancelled', as
   await vi.advanceTimersByTimeAsync(12_000)
   expect(events.recognized).not.toHaveBeenCalled()
   expect(events.failed).not.toHaveBeenCalled()
+})
+
+it.each([['not-allowed', 'denied'], ['no-speech', 'emptySpeech'], ['aborted', 'speechInterrupted']])(
+  'reports %s and permits a new session', (reason, issue) => {
+    const failed = callbacks()
+    speechToText.listen('en-IN', failed)
+    BrowserRecognition.current.onerror?.({ error: reason })
+    expect(failed.failed).toHaveBeenCalledExactlyOnceWith(issue)
+    expect(failed.recognized).not.toHaveBeenCalled()
+    const retry = callbacks()
+    speechToText.listen('en-IN', retry)
+    BrowserRecognition.current.onresult?.({ results: [[{ transcript: 'I worked today.' }]] })
+    expect(retry.recognized).toHaveBeenCalledExactlyOnceWith('I worked today.')
+  },
+)
+
+it('times out and aborts a stalled session', async () => {
+  vi.useFakeTimers()
+  const events = callbacks()
+  speechToText.listen('en-IN', events)
+  await vi.advanceTimersByTimeAsync(12_000)
+  expect(BrowserRecognition.current.abort).toHaveBeenCalledOnce()
+  expect(events.failed).toHaveBeenCalledExactlyOnceWith('timeout')
+})
+
+it('reports unsupported recognition asynchronously', async () => {
+  vi.stubGlobal('window', {})
+  const events = callbacks()
+  expect(speechToText.available()).toBe(false)
+  speechToText.listen('en-IN', events)
+  await Promise.resolve()
+  expect(events.failed).toHaveBeenCalledExactlyOnceWith('unsupported')
 })

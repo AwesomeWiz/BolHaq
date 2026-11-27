@@ -1,16 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
+import { DatabaseBackup, FileText, LayoutList, MessageSquareText } from 'lucide-react'
 import { AppHeader, EmployerCard, LocalFooter, ManualActions, TransactionList, WageBalance } from './components/LedgerPanels'
 import { EntryDialog } from './components/EntryDialog'
+import { BackupPanel } from './components/BackupPanel'
+import { VoiceGuide } from './components/VoiceGuide'
 import { VoicePanel } from './components/VoicePanel'
+import { ToolDialog } from './components/ToolDialog'
+import { WageReports } from './components/WageReports'
+import type { ReportView } from './components/WageReports'
 import type { VoiceFeedback } from './components/VoicePanel'
 import { LedgerError, totals, validateProposal } from './domain/ledger'
 import type { Ledger } from './domain/ledger'
 import { intentParser } from './domain/intent'
+import { matchWorksite } from './domain/reports'
 import { draftFromIntent, newDraft, reviewDraft, withInlineEdits } from './features/proposals'
 import type { Draft, Editor } from './features/proposals'
 import { languages, money } from './locales'
 import type { Locale } from './locales'
 import type { Messages } from './locales/en'
+import { wageTools } from './locales/wageTools'
 import { speechToText } from './services/speech'
 import { spokenMoney, textToSpeech } from './services/readAloud'
 import { ledgerStore } from './services/storage'
@@ -23,11 +31,20 @@ function preferredLocale(): Locale {
   }
 }
 
+function shouldShowGuide(ledger: Ledger) {
+  if (ledger.employers.length) return false
+  try { return localStorage.getItem('bolhaq-guide-complete') !== '1' } catch { return true }
+}
+
+type ToolView = ReportView | { view: 'backup' }
+
 export default function App() {
   const [locale, setLocale] = useState(preferredLocale)
   const [ledger, setLedger] = useState<Ledger | null>(null)
   const [loadingFailed, setLoadingFailed] = useState(false)
   const [editor, setEditor] = useState<Editor | null>(null)
+  const [tool, setTool] = useState<ToolView>()
+  const [guide, setGuide] = useState(false)
   const [feedback, setFeedback] = useState<VoiceFeedback>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
   const [lastSavedId, setLastSavedId] = useState<string>()
@@ -35,13 +52,17 @@ export default function App() {
   const lock = useRef(false)
   const playbackVersion = useRef(0)
   const recognition = useRef<ReturnType<typeof speechToText.listen> | null>(null)
+  const capturing = useRef(false)
   const language = languages.find(option => option.code === locale) ?? languages[0]
   const t = language.messages
+  const w = wageTools(locale)
 
   useEffect(() => {
     let mounted = true
     textToSpeech.prime()
-    void ledgerStore.read().then(data => { if (mounted) setLedger(data) }, () => { if (mounted) setLoadingFailed(true) })
+    void ledgerStore.read().then(data => {
+      if (mounted) { setLedger(data); setGuide(shouldShowGuide(data)) }
+    }, () => { if (mounted) setLoadingFailed(true) })
     return () => {
       mounted = false
       recognition.current?.cancel()
@@ -50,7 +71,16 @@ export default function App() {
   }, [])
   useEffect(() => { document.documentElement.lang = locale }, [locale])
   useEffect(() => {
-    const sync = () => document.documentElement.toggleAttribute('data-inactive', document.hidden)
+    const sync = () => {
+      document.documentElement.toggleAttribute('data-inactive', document.hidden)
+      // A permission prompt can interrupt page visibility while the microphone is opening.
+      if (document.hidden && capturing.current && recognition.current) {
+        recognition.current.cancel()
+        recognition.current = null
+        capturing.current = false
+        setFeedback({ status: 'error', message: 'speechInterrupted' })
+      }
+    }
     sync()
     document.addEventListener('visibilitychange', sync)
     return () => {
@@ -62,6 +92,7 @@ export default function App() {
   function cancelSpeech() {
     recognition.current?.cancel()
     recognition.current = null
+    capturing.current = false
     playbackVersion.current++
     textToSpeech.cancel()
     setPlayback(undefined)
@@ -79,6 +110,32 @@ export default function App() {
     cancelSpeech()
     setFeedback({ status: 'idle' })
     setEditor({ draft: newDraft(kind, ledger), stage: 'edit' })
+  }
+
+  function openTool(next: ToolView, transcript?: string) {
+    if (!ledger || lock.current) return
+    cancelSpeech()
+    setFeedback({ status: 'idle', transcript })
+    setTool(next)
+  }
+
+  function dismissGuide() {
+    setGuide(false)
+    try { localStorage.setItem('bolhaq-guide-complete', '1') } catch { /* Dismissed for this session. */ }
+  }
+
+  async function restoreBackup(content: string) {
+    if (lock.current) throw new LedgerError('changed')
+    lock.current = true
+    setSaving(true)
+    try {
+      setLedger(await ledgerStore.restore(content))
+      setLastSavedId(undefined)
+      setGuide(false)
+    } finally {
+      lock.current = false
+      setSaving(false)
+    }
   }
 
   async function selectEmployer(id: string) {
@@ -130,6 +187,13 @@ export default function App() {
       speakBalance(transcript)
       return
     }
+    if (parsed.intent === 'OPEN_REPORT') {
+      const { view, month } = parsed.parameters
+      const name = 'worksiteName' in parsed.parameters ? parsed.parameters.worksiteName : undefined
+      const siteId = name ? matchWorksite(ledger, name)?.id : ledger.activeId ?? undefined
+      openTool({ view, siteId, period: month ? { kind: 'month', month } : undefined }, transcript)
+      return
+    }
     const draft = draftFromIntent(parsed, ledger)
     if (!draft) {
       setFeedback({ status: 'error', message: 'unknown', transcript })
@@ -154,15 +218,20 @@ export default function App() {
     cancelSpeech()
     setFeedback({ status: 'starting' })
     recognition.current = speechToText.listen(locale, {
-      started: () => setFeedback({ status: 'listening', startedAt: Date.now() }),
+      started: () => {
+        capturing.current = true
+        setFeedback({ status: 'listening', startedAt: Date.now() })
+      },
       sound: active => setFeedback(previous => previous.status === 'listening' ? { ...previous, sound: active } : previous),
       processing: () => setFeedback({ status: 'processing' }),
       recognized: transcript => {
         recognition.current = null
+        capturing.current = false
         handleCommand(transcript, 'speech')
       },
       failed: message => {
         recognition.current = null
+        capturing.current = false
         setFeedback({ status: 'error', message })
       },
     })
@@ -219,13 +288,14 @@ export default function App() {
         {loadingFailed ? t.storage : t.loading}
         {loadingFailed && <button className="button" type="button" onClick={() => {
           setLoadingFailed(false)
-          void ledgerStore.read().then(setLedger, () => setLoadingFailed(true))
+          void ledgerStore.read().then(data => { setLedger(data); setGuide(shouldShowGuide(data)) }, () => setLoadingFailed(true))
         }}>{t.retry}</button>}
       </div>}
       <VoicePanel t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
         available={speechToText.available()} onMic={toggleMicrophone}
         onCancel={() => { cancelSpeech(); setFeedback({ status: 'idle' }) }}
         onCommand={command => handleCommand(command, 'typed')} />
+      {guide && ledger && <VoiceGuide w={w} examples={language.examples} finished={ledger.work.length > 0} onDismiss={dismissGuide} />}
       {ledger && <div className="workspace">
         <div className="wage-summary">
           <EmployerCard t={t} locale={locale} ledger={ledger} ready={!saving} onSelect={id => void selectEmployer(id)}
@@ -238,6 +308,18 @@ export default function App() {
           <TransactionList t={t} locale={locale} ledger={ledger} lastSavedId={lastSavedId} />
         </div>
       </div>}
+      {ledger && <section className="wage-tools" aria-labelledby="wage-tools">
+        <h2 id="wage-tools">{w.tools}</h2>
+        <div className="tool-links">
+          {([
+            { view: 'statement', Icon: FileText }, { view: 'reminder', Icon: MessageSquareText },
+            { view: 'overview', Icon: LayoutList }, { view: 'backup', Icon: DatabaseBackup },
+          ] as const).map(({ view, Icon }) => <button key={view} type="button" className="button"
+            disabled={saving} onClick={() => openTool(view === 'backup' ? { view } : { view, siteId: ledger.activeId ?? undefined })}>
+            <Icon size={18} aria-hidden="true" />{w[view]}
+          </button>)}
+        </div>
+      </section>}
       <LocalFooter t={t} />
     </main>
     <EntryDialog editor={editor} t={t} locale={locale} employerName={employerName} transcript={feedback.transcript} saving={saving}
@@ -251,5 +333,11 @@ export default function App() {
         draft: previous.draft, stage: 'edit', existing: previous.stage === 'review' ? previous.existing : undefined,
       })}
       onClose={closeEditor} onConfirm={() => void confirm()} />
+    {tool && ledger && <ToolDialog title={w[tool.view]} closeLabel={t.closeDialog} busy={saving} onClose={() => setTool(undefined)}>
+      {tool.view === 'backup' ? <BackupPanel locale={locale} t={t} w={w} saving={saving}
+        onRead={ledgerStore.read} onRestore={restoreBackup} /> :
+        <WageReports key={`${tool.view}:${tool.siteId ?? ''}`} view={tool} ledger={ledger} locale={locale}
+          onStatement={(siteId, period) => setTool({ view: 'statement', siteId, period })} />}
+    </ToolDialog>}
   </>
 }
