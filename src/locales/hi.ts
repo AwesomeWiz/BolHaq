@@ -67,6 +67,7 @@ export const hi: Messages = {
   "clarifyWorksite": "जिस कार्यस्थल की बात कर रहे हैं, उसे चुनें।",
   "clarifyDuplicateWorksite": "इस नाम के कई कार्यस्थल हैं। सही कार्यस्थल चुनें।",
   "clarifyPaymentState": "क्या आपको पैसे मिल गए हैं या अभी मिलने बाकी हैं?",
+  "paymentNotReceived": "समझ गया। कोई भुगतान दर्ज नहीं हुआ और आपके हिसाब में कोई बदलाव नहीं किया गया।",
   "clarifyOneAction": "एक बार में एक ही काम बोलें या टाइप करें।",
   "editCommand": "कमांड में बदलाव करें",
   "switchWorksite": "कार्यस्थल बदलें",

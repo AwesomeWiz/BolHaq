@@ -1,5 +1,6 @@
 import { knownCommand } from './intent'
 import type { ParsedIntent } from './intent'
+import { parseAmount } from './intentNumbers'
 import { readCommand } from './intentReads'
 import type { ReadSlots } from './intentReads'
 import { writeCommand } from './intentWrites'
@@ -12,7 +13,7 @@ export type MissingSlot = 'amount' | 'days' | 'rate' | 'date' | 'name' | 'worksi
 export type InterpretationStatus = 'understood' | 'missing' | 'ambiguous' | 'unsupported'
 export type InterpretationIssue = 'amount' | 'details' | 'worksite' | 'worksiteAmbiguous' | 'paymentState' | 'oneAction'
 type Unknown = { intent: 'UNKNOWN'; parameters: Record<string, never> }
-type Detected = WriteSlots | ReadSlots | Unknown
+type Detected = WriteSlots | ReadSlots | Unknown | { intent: 'PAYMENT_NOT_RECEIVED'; parameters: Record<string, never> }
 
 export type IntentContext = {
   today?: string
@@ -66,6 +67,25 @@ function nonCompleted(text: string, original: string) {
     /^(?:did |have i |was i |will |can i get |क्या |എനിക്ക് .*കിട്ടിയോ)/iu.test(text)
 }
 
+function clearNonPayment(text: string, original: string) {
+  if (/[?？]\s*$/u.test(original) ||
+      /^(?:क्या |अगर |यदि )|नहीं पता|शायद|लगता है|തോന്നുന്നു|എങ്കിൽ|ആണോ/iu.test(text)) return false
+
+  const english = /^i (?:haven't|have not|didn't|did not|never) (.+)$/iu.exec(text)?.[1]
+  if (english) {
+    const statement = english.replace(/ (?:yet|today|yesterday)$/iu, '')
+    if (/^(?:been paid|get paid|got paid)$/iu.test(statement)) return true
+    const object = /^(?:received?|get|got) (.+)$/iu.exec(statement)?.[1]
+    if (object && (/^(?:anything|(?:(?:any|my|the|a) )?(?:money|wages|pay(?:ment)?))$/iu.test(object) ||
+        parseAmount(object.toLowerCase()) !== null)) return true
+  }
+
+  const hindi = /(?:रुपय|रुपए|पैसे|भुगतान|मज़?दूरी|₹)/u.test(text) && /(?:^| )(?:नहीं|नही) (?:मिले|मिला|मिली)$/u.test(text)
+  const malayalam = /(?:കൂലി|പണം|രൂപ|₹)/u.test(text) &&
+    /(?:കിട്ടിയില്ല|കിട്ടിയിട്ടില്ല|ലഭിച്ചില്ല|ലഭിച്ചിട്ടില്ല)(?: ഇതുവരെ)?$/u.test(text)
+  return hindi || malayalam
+}
+
 function finalize(detected: Detected, original: string, context: IntentContext, issue?: InterpretationIssue): Interpretation {
   const missing: MissingSlot[] = []
   switch (detected.intent) {
@@ -85,7 +105,7 @@ function finalize(detected: Detected, original: string, context: IntentContext, 
       if (detected.parameters.rate === null) missing.push('rate')
   }
   const reference = 'reference' in detected ? detected.reference : undefined
-  const needsSite = !['UNKNOWN', 'CREATE_WORKSITE', 'QUERY_TOTAL_BALANCE'].includes(detected.intent)
+  const needsSite = !['UNKNOWN', 'PAYMENT_NOT_RECEIVED', 'CREATE_WORKSITE', 'QUERY_TOTAL_BALANCE'].includes(detected.intent)
   let worksiteId: string | undefined
   if (needsSite && context.worksites) {
     if (reference) {
@@ -119,6 +139,7 @@ export function interpretIntent(original: string, context: IntentContext = {}): 
   const today = context.today ?? localDate()
   const text = normalizeTranscript(original)
   if (multipleActions(text)) return finalize(unknown, original, context, 'oneAction')
+  if (clearNonPayment(text, original)) return finalize({ intent: 'PAYMENT_NOT_RECEIVED', parameters: {} }, original, context)
 
   const legacy = knownCommand(original, today, text)
   const previous = previousCommand(legacy)

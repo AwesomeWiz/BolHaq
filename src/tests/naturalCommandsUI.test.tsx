@@ -10,6 +10,7 @@ import type { Locale } from '../locales'
 import { en } from '../locales/en'
 import { ledgerStore } from '../services/storage'
 import { reportLedger } from './fixtures/reportLedger'
+import { attendance, contractorPayment, noPayment } from './fixtures/naturalCommandHotfix'
 
 const today = '2026-11-27'
 const yesterday = '2026-11-26'
@@ -47,12 +48,12 @@ function fakeRecognition() {
   return (transcript: string) => act(() => Recognition.current?.onresult?.({ results: [[{ transcript }]] }))
 }
 
-async function typeCommand(user: ReturnType<typeof userEvent.setup>, command: string) {
-  if (!screen.queryByRole('textbox', { name: en.type })) await user.click(await screen.findByRole('button', { name: en.type }))
-  const input = screen.getByRole('textbox', { name: en.type })
+async function typeCommand(user: ReturnType<typeof userEvent.setup>, command: string, t = en) {
+  if (!screen.queryByRole('textbox', { name: t.type })) await user.click(await screen.findByRole('button', { name: t.type }))
+  const input = screen.getByRole('textbox', { name: t.type })
   await user.clear(input)
   await user.type(input, command)
-  await user.click(screen.getByRole('button', { name: en.send }))
+  await user.click(screen.getByRole('button', { name: t.send }))
 }
 
 beforeEach(() => {
@@ -70,6 +71,47 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
 })
+
+for (const source of ['typed', 'speech'] as const) {
+  it.each([
+    ['ml-IN', attendance, 'work', 'days', '1', today],
+    ['hi-IN', contractorPayment, 'payment', 'amount', '500', yesterday],
+  ] as const)('prepares %s attendance or payment through ' + source + ' for %s', async (locale, text, kind, field, value, date) => {
+    const emit = fakeRecognition()
+    const { user, t, confirm, select } = setup(locale)
+    if (source === 'typed') await typeCommand(user, text, t)
+    else {
+      await user.click(await screen.findByRole('button', { name: t.tap }))
+      emit(text)
+    }
+    const dialog = within(screen.getByRole('dialog', { name: t[kind] }))
+    expect(dialog.getByRole<HTMLInputElement>('textbox', { name: t[field] }).value).toBe(value)
+    expect(dialog.getByText(dateLabel(date, locale))).toBeTruthy()
+    expect(dialog.getByText('कलूर Site')).toBeTruthy()
+    expect(dialog.getByRole('button', { name: t.confirm })).toBeTruthy()
+    expect(confirm).not.toHaveBeenCalled()
+    await user.click(dialog.getByRole('button', { name: t.cancel }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(confirm).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+  })
+  it.each(noPayment)('acknowledges %s non-payment through ' + source + ' for %s', async (locale, text) => {
+    const emit = fakeRecognition()
+    const { user, t, confirm, select, read } = setup(locale)
+    const before = read()
+    if (source === 'typed') await typeCommand(user, text, t)
+    else {
+      await user.click(await screen.findByRole('button', { name: t.tap }))
+      emit(text)
+    }
+    expect(screen.getByText(t.paymentNotReceived)).toBeTruthy()
+    expect(screen.queryByText(t.clarifyPaymentState)).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(confirm).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect(read()).toEqual(before)
+  })
+}
 
 it('previews a typed payment for a different worksite and date, and changes records only on confirmation', async () => {
   const { user, confirm, select, read } = setup()
@@ -158,7 +200,8 @@ it.each([
   const { user, t, confirm } = setup(locale)
   await user.click(await screen.findByRole('button', { name: t.tap }))
   emit(transcript)
-  expect(screen.getByText(t.clarifyPaymentState)).toBeTruthy()
+  expect(screen.getByText(t.paymentNotReceived)).toBeTruthy()
+  expect(screen.queryByText(t.clarifyPaymentState)).toBeNull()
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(confirm).not.toHaveBeenCalled()
 })

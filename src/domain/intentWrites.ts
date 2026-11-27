@@ -7,17 +7,18 @@ export type WriteSlots =
   | { intent: 'SET_DAILY_WAGE'; parameters: { rate: number | null }; reference?: string; ambiguous?: boolean }
   | { intent: 'CREATE_WORKSITE'; parameters: { name: string; rate: number | null }; ambiguous?: boolean }
 
-const genericActor = /^(?:(?:my |the |a )?(?:contractor|supervisor|foreman|employer|boss)|they|he|she|someone|(?:मेरे |मेरा )?(?:ठेकेदार|मालिक|मुंशी|उसने|उन्होंने)|(?:എന്റെ )?(?:കോൺട്രാക്ടർ|കരാറുകാരൻ|മേസ്തിരി|അവർ|അവൻ))$/iu
+const hindiPayerRole = /^(?:मेरे |मेरा )?(?:ठेकेदार|मालिक|मुंशी)$/u
+const genericActor = /^(?:(?:my |the |a )?(?:contractor|supervisor|foreman|employer|boss)|they|he|she|someone|उसने|उन्होंने|(?:എന്റെ )?(?:കോൺട്രാക്ടർ|കരാറുകാരൻ|മേസ്തിരി|അവർ|അവൻ))$/iu
 export function namedActor(actor?: string) {
   const name = actor?.trim()
-  return name && !genericActor.test(name) ? name : undefined
+  return name && !genericActor.test(name) && !hindiPayerRole.test(name) ? name : undefined
 }
 
 function cleanAmount(text: string) {
   return text.trim().replace(/^[:,]\s*/u, '').toLowerCase()
 }
 
-function parsePayment(frame: { phrase: string; date?: string | null; reference?: string }): WriteSlots {
+function parsePayment(frame: { phrase: string; date?: string | null; reference?: string }): Extract<WriteSlots, { intent: 'RECORD_PAYMENT' }> {
   const { date, reference } = frame
   const phrase = cleanAmount(frame.phrase)
   const vague = /^(?:some (?:money|pay)|my (?:pay|wages)|money|paid|पैसे|मज़?दूरी|भुगतान|कुछ पैसे|കൂലി|പണം|കുറച്ച് പണം)?$/iu.test(phrase)
@@ -38,18 +39,23 @@ function paymentFrame(text: string, date?: string | null) {
     })
   }
 
-  const hindi = /^(.*?)(?:^| )(मिले|मिला|मिली|मिल गए|मिल गई|दिए|दी|दिया)$/u.exec(text)
+  const hindi = /^(.*?)(?:^| )(मिले|मिला|मिली|मिल गए|मिल गई|(?:दे )?(?:दिए|दी|दिया))$/u.exec(text)
   if (hindi) {
-    const actor = /^(.+?) ने मुझे(?: (.*)|$)/u.exec(hindi[1])
-    const self = /^मुझे(?:[ :,]+(.*)|$)/u.exec(hindi[1])
-    const gave = /^(?:दिए|दी|दिया)$/u.test(hindi[2])
-    if (gave && !actor && !self) return
-    let rest = (actor?.[2] ?? self?.[1] ?? (self ? '' : hindi[1])).trim()
+    const actor = /^(.+?) ने (.*)$/u.exec(hindi[1])
+    const body = actor?.[2] ?? hindi[1]
+    const self = /^(?:मुझे|मुझको)(?:[ :,]+(.*)|$)/u.exec(body)
+    const gave = /^(?:दे )?(?:दिए|दी|दिया)$/u.test(hindi[2])
+    const implicitRecipient = !self && gave && !!actor && hindiPayerRole.test(actor[1])
+    if (!self && (gave || actor) && !implicitRecipient) return
+    let rest = (self ? self[1] ?? '' : body).trim()
     if (!actor && !self && !/(?:रुप|₹|\binr\b|भुगतान|मज़?दूरी|पैसे| से )/iu.test(rest)) return
     const source = /^(.+?) से (.+)$/u.exec(rest)
     rest = (source?.[2] ?? rest).replace(/ (?:का भुगतान|की मज़?दूरी)$/u, '')
       .replace(/^आई\s*एस(?=\s+\d)/u, '₹')
-    return parsePayment({ date, phrase: rest, reference: namedActor(source?.[1] ?? actor?.[1]) })
+    const payment = parsePayment({ date, phrase: rest, reference: namedActor(source?.[1] ?? actor?.[1]) })
+    // An omitted recipient is safe to review only with a known payer role and a clean amount.
+    if (!implicitRecipient || (!source && payment.parameters.amount !== null)) return payment
+    return
   }
 
   const malayalam = /^(.*?)(?:^| )(കിട്ടി|ലഭിച്ചു|തന്നു)$/u.exec(text)
@@ -86,7 +92,7 @@ function workFrame(text: string, date?: string | null): WriteSlots | undefined {
   }
 
   const hindi = /^(.*?)(?:^| )(?:काम किया(?: था)?|काम (?:दर्ज करो|लिखो|दर्ज करें)|(?:हाजिरी|हाज़िरी) (?:दर्ज करो|लगा दो|लिखो))$/u.exec(text)
-  const malayalam = /^(.*?)(?:^| )(?:ജോലി ചെയ്തു|പണിയെടുത്തു|ജോലി (?:രേഖപ്പെടുത്തൂ|കണക്കിൽ ചേർക്കൂ)|ഹാജർ (?:ചേർക്കൂ|രേഖപ്പെടുത്തൂ))$/u.exec(text)
+  const malayalam = /^(.*?)(?:^| )(?:ജോലി ചെയ്തു|പണിയെടുത്തു|(?:പണി|ജോലി)ക്ക[്ു] പോയി(?:രുന്നു)?|ജോലി (?:രേഖപ്പെടുത്തൂ|കണക്കിൽ ചേർക്കൂ)|ഹാജർ (?:ചേർക്കൂ|രേഖപ്പെടുത്തൂ))$/u.exec(text)
   if (!hindi && !malayalam) return
   let context = (hindi?.[1] ?? malayalam?.[1] ?? '').replace(/^(?:मैंने|मैं|मेरी|ഞാൻ)(?: |$)/u, '').trim()
   const count = /^(.*?) (?:दिन(?: का| की)?|ദിവസം|ദിവസത്തെ)(?: |$)/u.exec(context)

@@ -195,6 +195,10 @@ export default function App() {
     const transcript = source === 'speech' ? parsed.original : undefined
     const message = parsed.issue && clarification[parsed.issue]
     const reference = 'reference' in parsed ? parsed.reference : undefined
+    if (parsed.intent === 'PAYMENT_NOT_RECEIVED') {
+      setFeedback({ status: 'idle', message: 'paymentNotReceived', transcript })
+      return
+    }
     if (parsed.intent === 'UNKNOWN') {
       setFeedback({ status: 'error', message: message ?? 'unknown', transcript, editableCommand: parsed.original })
       return

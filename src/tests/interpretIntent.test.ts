@@ -1,12 +1,38 @@
 import { expect, it } from 'vitest'
 import { interpretIntent } from '../domain/interpretIntent'
 import { normalizeTranscript } from '../domain/transcript'
+import { attendance, contractorPayment, noPayment } from './fixtures/naturalCommandHotfix'
 
 const today = '2026-11-27'
 const context = { today, activeWorksiteId: 'abc', worksites: [
   { id: 'abc', name: 'ABC Construction' }, { id: 'metro', name: 'Metro Works' },
 ] }
 const yesterday = '2026-11-26'
+
+it.each([attendance, 'ഞാൻ ഇന്ന് ജോലിക്കു പോയി'])('prepares one workday from %s', text => {
+  expect(interpretIntent(text, context)).toMatchObject({
+    intent: 'RECORD_WORK', status: 'understood', parameters: { days: 1, date: today }, worksiteId: 'abc',
+    requiresConfirmation: true,
+  })
+})
+
+it.each([contractorPayment, 'कल मेरे ठेकेदार ने पाँच सौ रुपये दे दिए।'])('uses the selected worksite and past date for %s', text => {
+  expect(interpretIntent(text, context)).toMatchObject({
+    intent: 'RECORD_PAYMENT', status: 'understood', parameters: { amount: 50_000, date: yesterday },
+    worksiteId: 'abc', requiresConfirmation: true,
+  })
+})
+
+it.each(noPayment)('understands clear non-payment in %s for %s', (_locale, text) => {
+  expect(interpretIntent(text, context)).toMatchObject({
+    intent: 'PAYMENT_NOT_RECEIVED', status: 'understood', parameters: {}, missing: [], requiresConfirmation: false,
+  })
+})
+
+it.each(['ठेकेदार ने रमेश को कल 500 दिए', 'कल ठेकेदार ने औज़ार दिए', 'ठेकेदार ने कल 500 या 700 दिए',
+  'നാളെ പണിക്ക് പോയി', 'ഇന്ന് പണിക്ക് പോയില്ല'])('does not stage an unsafe entry for %s', text => {
+  expect(interpretIntent(text, context)).toMatchObject({ intent: 'UNKNOWN', requiresConfirmation: false })
+})
 
 it('normalizes Unicode, punctuation and digits while returning the original transcript', () => {
   const text = '  I   got　₹൨,൦൦൦   yesterday。 '
@@ -51,14 +77,30 @@ it.each([
 })
 
 it.each([
-  'I did not receive 2000 rupees.', "I haven't received my wages.", 'I will receive 2000 tomorrow.',
+  'I will receive 2000 tomorrow.',
   'I should receive 2000.', 'My contractor owes me 2000.', 'I paid my contractor 2000.',
   'They promised to pay me tomorrow.', 'Did I receive 2000?', 'I received 2000?',
-  'मुझे दो हजार रुपये नहीं मिले।', 'मुझे अभी तक पैसे नहीं मिले।', 'मुझे 2000 रुपये मिलने वाले हैं।',
-  'എനിക്ക് രണ്ടായിരം രൂപ കിട്ടിയില്ല.', 'എനിക്ക് ഇനിയും കൂലി കിട്ടിയിട്ടില്ല.', 'നാളെ 2000 രൂപ കിട്ടും.',
+  'मुझे 2000 रुपये मिलने वाले हैं।', 'നാളെ 2000 രൂപ കിട്ടും.',
 ])('cannot stage a received-payment write for %s', text => {
   expect(interpretIntent(text, context)).toMatchObject({ intent: 'UNKNOWN', requiresConfirmation: false })
 })
+
+it.each([
+  'I did not receive 2000 rupees.', "I haven't received my wages.",
+  'मुझे दो हजार रुपये नहीं मिले।', 'मुझे अभी तक पैसे नहीं मिले।',
+  'എനിക്ക് രണ്ടായിരം രൂപ കിട്ടിയില്ല.', 'എനിക്ക് ഇനിയും കൂലി കിട്ടിയിട്ടില്ല.',
+])('acknowledges another definite negative statement without clarification or a write for %s', text => {
+  expect(interpretIntent(text, context)).toMatchObject({
+    intent: 'PAYMENT_NOT_RECEIVED', status: 'understood', issue: undefined, requiresConfirmation: false,
+  })
+})
+
+it.each(["I haven't received my wages?", 'क्या अभी तक पैसे नहीं मिले?', 'കൂലി കിട്ടിയില്ല എന്ന് തോന്നുന്നു'])(
+  'still asks for clarification when %s is a question or uncertain',
+  text => expect(interpretIntent(text, context)).toMatchObject({
+    intent: 'UNKNOWN', status: 'ambiguous', issue: 'paymentState', requiresConfirmation: false,
+  }),
+)
 
 it('clarifies missing or conflicting amounts without mining other numbers', () => {
   for (const text of ['My contractor gave me money for two days.', 'They paid me 700 or 900.', 'I got 5 work hours today.']) {

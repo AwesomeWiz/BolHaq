@@ -28,7 +28,8 @@ function classify(transcript: string): { intent: ExpectedIntent; status: Status 
     }
   }
   const { intent, status } = interpretIntent(transcript, context)
-  return { intent, status }
+  // The frozen TASK-002C corpus grouped all non-actions under UNKNOWN.
+  return { intent: intent === 'PAYMENT_NOT_RECEIVED' ? 'UNKNOWN' : intent, status }
 }
 
 it('evaluates the fixed multilingual held-out corpus', () => {
