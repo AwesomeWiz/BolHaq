@@ -7,8 +7,6 @@ import { GuidedTour, VoiceGuide } from './components/VoiceGuide'
 import { SpeechDiagnostics } from './components/SpeechDiagnostics'
 import { speechDebugEnabled } from './services/speechDiagnostics'
 import { VoicePanel } from './components/VoicePanel'
-import { CloudRecordingPanel } from './components/CloudRecordingPanel'
-import type { CloudRecordingFeedback } from './components/CloudRecordingPanel'
 import { ToolDialog } from './components/ToolDialog'
 import { WageReports } from './components/WageReports'
 import { WorksiteChoice } from './components/WorksiteChoice'
@@ -54,14 +52,41 @@ function shouldShowGuide(ledger: Ledger) {
   } catch { return true }
 }
 
-/** Returns true when iOS + Hindi/Malayalam — locales where cloud STT is preferred. */
-function shouldOfferCloudSpeech(locale: Locale): locale is CloudSpeechLocale {
+const CLOUD_CONSENT_KEY = 'bolhaq-cloud-speech-consent'
+
+function getCloudConsent(): boolean | null {
+  try {
+    const val = localStorage.getItem(CLOUD_CONSENT_KEY)
+    if (val === 'granted') return true
+    if (val === 'denied') return false
+    return null
+  } catch {
+    return null
+  }
+}
+
+function setCloudConsent(granted: boolean) {
+  try {
+    localStorage.setItem(CLOUD_CONSENT_KEY, granted ? 'granted' : 'denied')
+  } catch { /* Ignore */ }
+}
+
+function shouldRouteToCloud(locale: Locale, isServiceBlocked: boolean): boolean {
   if (locale !== 'hi-IN' && locale !== 'ml-IN') return false
   if (!cloudSpeechAvailable()) return false
-  // Heuristic: iOS Safari lacks a reliable Malayalam service, Hindi often times out.
-  // We always offer cloud on iOS for these locales. On Android/desktop the browser
-  // path usually works; we still offer cloud after specific failures.
-  return true
+
+  // If Malayalam browser speech returned service-not-allowed, route to cloud
+  if (locale === 'ml-IN' && isServiceBlocked) return true
+
+  // On iOS devices, Safari speech recognition is notoriously broken for hi-IN/ml-IN
+  const isIOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+  if (isIOS) return true
+
+  // For testing / desktop where cloud is enabled and browser returns unsupported/blocked
+  if (isServiceBlocked) return true
+
+  return false
 }
 
 type ToolView = ReportView | { view: 'backup' }
@@ -70,10 +95,6 @@ const clarification: Record<InterpretationIssue, keyof Messages> = {
   amount: 'clarifyAmount', details: 'clarify', worksite: 'clarifyWorksite',
   worksiteAmbiguous: 'clarifyDuplicateWorksite', paymentState: 'clarifyPaymentState', oneAction: 'clarifyOneAction',
 }
-
-type CloudSttState =
-  | { active: false }
-  | { active: true; phase: 'consent' | 'recording' | 'review' | 'uploading' | 'error'; blob?: Blob; durationMs?: number; elapsedMs?: number; errorKey?: keyof Messages }
 
 export default function App() {
   const [locale, setLocale] = useState(preferredLocale)
@@ -93,23 +114,46 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [lastSavedId, setLastSavedId] = useState<string>()
   const [playback, setPlayback] = useState<keyof Messages>()
-  const [cloudStt, setCloudStt] = useState<CloudSttState>({ active: false })
+  const [showConsentModal, setShowConsentModal] = useState(false)
+
   const lock = useRef(false)
   const playbackVersion = useRef(0)
   const recognition = useRef<ReturnType<typeof speechToText.listen> | null>(null)
   const capturing = useRef(false)
   const cloudRecordingRef = useRef<{ stop(): void; cancel(): void } | null>(null)
   const uploadAbortRef = useRef<AbortController | null>(null)
+  const isCloudRecordingActive = useRef(false)
+
   const language = languages.find(option => option.code === locale) ?? languages[0]
   const t = language.messages
   const w = wageTools(locale)
-  const micBlocked = locale === 'ml-IN' && malayalamSpeechBlocked
+
+  const useCloud = shouldRouteToCloud(locale, malayalamSpeechBlocked)
 
   const stopTourAudio = useCallback((clearStatus = true) => {
     tourPlaybackVersion.current++
     tourNarration.cancel()
     if (clearStatus) setTourPlayback(undefined)
   }, [])
+
+  const cancelSpeech = useCallback(() => {
+    stopTourAudio()
+    recognition.current?.cancel()
+    recognition.current = null
+    capturing.current = false
+    playbackVersion.current++
+    textToSpeech.cancel()
+    cancelCloudTts()
+    setPlayback(undefined)
+
+    // Cancel cloud recording & upload
+    uploadAbortRef.current?.abort()
+    uploadAbortRef.current = null
+    cloudRecordingRef.current?.cancel()
+    cloudRecordingRef.current = null
+    isCloudRecordingActive.current = false
+    setShowConsentModal(false)
+  }, [stopTourAudio])
 
   useEffect(() => {
     let mounted = true
@@ -128,20 +172,24 @@ export default function App() {
       uploadAbortRef.current?.abort()
     }
   }, [stopTourAudio])
+
   useEffect(() => { document.documentElement.lang = locale }, [locale])
+
   useEffect(() => {
     const sync = () => {
       document.documentElement.toggleAttribute('data-inactive', document.hidden)
-      if (document.hidden) stopTourAudio()
-      if (document.hidden && capturing.current && recognition.current) {
-        recognition.current.cancel()
-        recognition.current = null
-        capturing.current = false
-        setFeedback({ status: 'error', message: 'speechInterrupted' })
-      }
-      // Cancel cloud recording if page hides.
-      if (document.hidden && cloudStt.active) {
-        cancelCloudSession()
+      if (document.hidden) {
+        stopTourAudio()
+        if (capturing.current && recognition.current) {
+          recognition.current.cancel()
+          recognition.current = null
+          capturing.current = false
+          setFeedback({ status: 'error', message: 'speechInterrupted' })
+        }
+        if (isCloudRecordingActive.current) {
+          cancelSpeech()
+          setFeedback({ status: 'error', message: 'speechInterrupted' })
+        }
       }
     }
     sync()
@@ -150,27 +198,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', sync)
       document.documentElement.removeAttribute('data-inactive')
     }
-  }, [stopTourAudio, cloudStt.active])
-
-  function cancelCloudSession() {
-    uploadAbortRef.current?.abort()
-    uploadAbortRef.current = null
-    cloudRecordingRef.current?.cancel()
-    cloudRecordingRef.current = null
-    setCloudStt({ active: false })
-  }
-
-  function cancelSpeech() {
-    stopTourAudio()
-    recognition.current?.cancel()
-    recognition.current = null
-    capturing.current = false
-    playbackVersion.current++
-    textToSpeech.cancel()
-    cancelCloudTts()
-    setPlayback(undefined)
-    cancelCloudSession()
-  }
+  }, [stopTourAudio, cancelSpeech])
 
   function changeLanguage(next: Locale) {
     if (next === locale) return
@@ -179,7 +207,7 @@ export default function App() {
     setLocale(next)
     if (tourIndex !== null) playTour(tourIndex, next)
     setFeedback({ status: 'idle' })
-    try { localStorage.setItem('bolhaq-language', next) } catch { /* Language still applies to this session. */ }
+    try { localStorage.setItem('bolhaq-language', next) } catch { /* Ignore */ }
   }
 
   function openManual(kind: Draft['kind']) {
@@ -198,7 +226,7 @@ export default function App() {
 
   function playTour(index: number, languageCode: Locale) {
     stopTourAudio()
-    if (recognition.current || document.hidden) return
+    if (recognition.current || isCloudRecordingActive.current || document.hidden) return
     playbackVersion.current++
     textToSpeech.cancel()
     setPlayback(undefined)
@@ -226,7 +254,7 @@ export default function App() {
     stopTourAudio()
     setGuide(false)
     setTourIndex(null)
-    try { localStorage.setItem('bolhaq-guide-complete', outcome) } catch { /* Dismissed for this session. */ }
+    try { localStorage.setItem('bolhaq-guide-complete', outcome) } catch { /* Ignore */ }
     if (tourIndex !== null) requestAnimationFrame(() => {
       const trigger = tourTrigger.current
       if (trigger?.isConnected) trigger.focus()
@@ -286,7 +314,6 @@ export default function App() {
       setFeedback({ status: 'success', transcript, reply })
     }
 
-    // Use hybrid TTS (browser → Bulbul fallback for hi-IN/ml-IN).
     if (locale === 'hi-IN' || locale === 'ml-IN') {
       void speakBalanceHybrid({ paise, balanceType }, locale, narration).then(result => {
         if (version !== playbackVersion.current || result === 'cancelled') return
@@ -360,89 +387,115 @@ export default function App() {
     setCommandEdit(previous => ({ text, version: previous.version + 1 }))
   }
 
-  // ---- Cloud STT flow ----
+  // --- UNIFIED CLOUD SPEECH FLOW (Direct from Central Mic) ---
 
-  function openCloudRecording() {
-    // Show consent screen before any microphone access.
-    cancelSpeech()
-    setFeedback({ status: 'idle' })
-    setCloudStt({ active: true, phase: 'consent' })
-  }
-
-  function startCloudCapture() {
+  function startCloudRecordingSession() {
     const mimeType = supportedMimeType()
     if (!mimeType) {
-      setCloudStt({ active: true, phase: 'error', errorKey: 'cloudFormatError' })
+      setFeedback({ status: 'error', message: 'cloudFormatError', provider: 'cloud' })
       return
     }
-    setCloudStt({ active: true, phase: 'recording', elapsedMs: 0 })
+
+    cancelSpeech()
+    setFeedback({ status: 'starting', provider: 'cloud' })
+    isCloudRecordingActive.current = true
 
     cloudRecordingRef.current = startCloudRecording(mimeType, {
       started() {
-        setCloudStt(prev => prev.active ? { ...prev, phase: 'recording', elapsedMs: 0 } : prev)
+        setFeedback({ status: 'listening', startedAt: Date.now(), provider: 'cloud' })
       },
-      tick(elapsedMs) {
-        setCloudStt(prev => prev.active ? { ...prev, elapsedMs } : prev)
+      sound(active) {
+        setFeedback(prev => prev.status === 'listening' ? { ...prev, sound: active } : prev)
       },
-      stopped(blob, durationMs) {
+      tick() {
+        // Clock ticks via component RecordingClock
+      },
+      stopped(blob) {
         cloudRecordingRef.current = null
-        setCloudStt({ active: true, phase: 'review', blob, durationMs })
+        isCloudRecordingActive.current = false
+        void processCloudRecording(blob)
       },
       failed(reason) {
         cloudRecordingRef.current = null
-        const errorKey: keyof Messages = reason === 'permission' ? 'cloudPermissionError'
-          : reason === 'format' ? 'cloudFormatError' : 'cloudServerError'
-        setCloudStt({ active: true, phase: 'error', errorKey })
+        isCloudRecordingActive.current = false
+        const msg: keyof Messages = reason === 'permission' ? 'cloudPermissionError'
+          : reason === 'format' ? 'cloudFormatError'
+          : reason === 'emptySpeech' ? 'emptySpeech' : 'cloudServerError'
+        setFeedback({ status: 'error', message: msg, provider: 'cloud' })
       },
     })
   }
 
-  async function sendCloudRecording() {
-    if (cloudStt.active && cloudStt.phase === 'review' && cloudStt.blob) {
-      const blob = cloudStt.blob
-      setCloudStt({ active: true, phase: 'uploading' })
-      const controller = new AbortController()
-      uploadAbortRef.current = controller
+  async function processCloudRecording(blob: Blob) {
+    setFeedback({ status: 'processing', provider: 'cloud' })
+    const controller = new AbortController()
+    uploadAbortRef.current = controller
 
-      const cloudLocale = locale as CloudSpeechLocale
-      const result = await transcribeBlob(blob, cloudLocale, controller.signal)
-      uploadAbortRef.current = null
+    const result = await transcribeBlob(blob, locale as CloudSpeechLocale, controller.signal)
+    uploadAbortRef.current = null
 
-      if (controller.signal.aborted) return  // cancelled
-      setCloudStt({ active: false })
+    if (controller.signal.aborted) return
 
-      if (result.status === 'transcript') {
-        handleCommand(result.text, 'speech')
-      } else {
-        const errorKeyMap: Record<string, keyof Messages> = {
-          quota: 'cloudQuota', disabled: 'cloudDisabled', timeout: 'cloudTimeout',
-          format: 'cloudFormatError', size: 'cloudFormatError', server: 'cloudServerError',
-          network: 'cloudNetworkError',
-        }
-        setFeedback({ status: 'error', message: errorKeyMap[result.code] ?? 'cloudServerError' })
+    if (result.status === 'transcript') {
+      handleCommand(result.text, 'speech')
+    } else {
+      const errorKeyMap: Record<string, keyof Messages> = {
+        quota: 'cloudQuota', disabled: 'cloudDisabled', timeout: 'cloudTimeout',
+        format: 'cloudFormatError', size: 'cloudFormatError', server: 'cloudServerError',
+        network: 'cloudNetworkError',
       }
+      setFeedback({ status: 'error', message: errorKeyMap[result.code] ?? 'cloudServerError', provider: 'cloud' })
     }
   }
 
-  function toggleMicrophone() {
-    if (micBlocked) return
+  // --- UNIFIED CENTRAL MICROPHONE HANDLER ---
 
-    // If cloud recording panel is showing, treat mic tap as cancel.
-    if (cloudStt.active) { cancelCloudSession(); return }
+  function toggleCentralMicrophone() {
+    // 1. If currently listening via either provider, clicking the mic stops recording
+    if (cloudRecordingRef.current && isCloudRecordingActive.current) {
+      cloudRecordingRef.current.stop()
+      return
+    }
 
     if (recognition.current) {
       recognition.current.stop()
       return
     }
+
+    // 2. Determine routing
+    if (useCloud) {
+      const consent = getCloudConsent()
+      if (consent === false) {
+        // User previously declined cloud consent; fallback to typed/manual
+        setFeedback({ status: 'error', message: 'cloudDisabled' })
+        return
+      }
+      if (consent === null) {
+        // First-use consent required
+        cancelSpeech()
+        setShowConsentModal(true)
+        return
+      }
+      // Consent already granted -> start cloud recording directly
+      startCloudRecordingSession()
+      return
+    }
+
+    // 3. Native Browser Speech Recognition
+    if (locale === 'ml-IN' && malayalamSpeechBlocked) {
+      // If browser Malayalam blocked and cloud not available
+      return
+    }
+
     cancelSpeech()
-    setFeedback({ status: 'starting' })
+    setFeedback({ status: 'starting', provider: 'browser' })
     recognition.current = speechToText.listen(locale, {
       started: () => {
         capturing.current = true
-        setFeedback({ status: 'listening', startedAt: Date.now() })
+        setFeedback({ status: 'listening', startedAt: Date.now(), provider: 'browser' })
       },
       sound: active => setFeedback(previous => previous.status === 'listening' ? { ...previous, sound: active } : previous),
-      processing: () => setFeedback({ status: 'processing' }),
+      processing: () => setFeedback({ status: 'processing', provider: 'browser' }),
       recognized: transcript => {
         recognition.current = null
         capturing.current = false
@@ -451,18 +504,35 @@ export default function App() {
       failed: message => {
         recognition.current = null
         capturing.current = false
-        if (message === 'speechServiceBlocked') setMalayalamSpeechBlocked(true)
-        setFeedback({ status: 'error', message })
-
-        // After certain failures on hi-IN/ml-IN, automatically offer cloud path.
-        const cloudFail = message === 'speechServiceBlocked' || message === 'speechNoResult' ||
-          message === 'speechLanguage' || message === 'timeout'
-        if (cloudFail && shouldOfferCloudSpeech(locale)) {
-          // Slight delay so the error message renders before panel opens.
-          setTimeout(() => openCloudRecording(), 600)
+        if (message === 'speechServiceBlocked') {
+          setMalayalamSpeechBlocked(true)
+          // If cloud speech is available, immediately trigger seamless cloud flow
+          if (cloudSpeechAvailable()) {
+            const consent = getCloudConsent()
+            if (consent === true) {
+              startCloudRecordingSession()
+              return
+            } else if (consent === null) {
+              setShowConsentModal(true)
+              return
+            }
+          }
         }
+        setFeedback({ status: 'error', message, provider: 'browser' })
       },
     })
+  }
+
+  function handleAcceptConsent() {
+    setCloudConsent(true)
+    setShowConsentModal(false)
+    startCloudRecordingSession()
+  }
+
+  function handleDeclineConsent() {
+    setCloudConsent(false)
+    setShowConsentModal(false)
+    setFeedback({ status: 'idle' })
   }
 
   async function confirm() {
@@ -508,11 +578,6 @@ export default function App() {
 
   const employerName = ledger?.employers.find(employer => employer.id === editor?.draft.employerId)?.name ?? ''
 
-  // Cloud recording feedback adapter for CloudRecordingPanel.
-  const cloudFeedback: CloudRecordingFeedback = cloudStt.active
-    ? { phase: cloudStt.phase, elapsedMs: cloudStt.elapsedMs, durationMs: cloudStt.durationMs, errorKey: cloudStt.errorKey }
-    : { phase: 'consent' }
-
   return <>
     <AppHeader locale={locale} t={t} onLanguage={changeLanguage} />
     <main className="shell main-content">
@@ -526,23 +591,16 @@ export default function App() {
       </div>}
       <VoicePanel key={commandEdit.version} initialCommand={commandEdit.text} onEditCommand={editCommand}
         t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
-        available={speechToText.available()} micBlocked={micBlocked} onMic={toggleMicrophone}
+        available={speechToText.available() || useCloud}
+        micBlocked={locale === 'ml-IN' && malayalamSpeechBlocked && !useCloud}
+        onMic={toggleCentralMicrophone}
         onCancel={() => { cancelSpeech(); setFeedback({ status: 'idle' }) }}
         onCommand={command => handleCommand(command, 'typed')}
         tourLabel={ledger && tourIndex === null ? onboarding(locale).restart : undefined} onTour={startTour}
-        onCloudRecord={shouldOfferCloudSpeech(locale) ? openCloudRecording : undefined}
-        cloudRecordingAvailable={cloudSpeechAvailable() && shouldOfferCloudSpeech(locale)} />
-      {cloudStt.active && (
-        <CloudRecordingPanel
-          t={t}
-          feedback={cloudFeedback}
-          onConsent={startCloudCapture}
-          onStop={() => cloudRecordingRef.current?.stop()}
-          onSend={() => void sendCloudRecording()}
-          onDiscard={cancelCloudSession}
-          onCancel={cancelCloudSession}
-        />
-      )}
+        showConsent={showConsentModal}
+        onAcceptConsent={handleAcceptConsent}
+        onDeclineConsent={handleDeclineConsent}
+        isCloudActive={useCloud} />
       {import.meta.env.DEV && speechDebugEnabled() && <SpeechDiagnostics locale={locale} />}
       {guide && ledger && <VoiceGuide w={w} locale={locale} onStart={startTour} onDismiss={() => dismissGuide('skipped')} />}
       {ledger && <div className="workspace">
