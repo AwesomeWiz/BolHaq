@@ -59,9 +59,13 @@ export function worksiteOverview(ledger: Ledger, range?: DateRange) {
   return { sites, owed, advances, earned, paid }
 }
 
-export function matchWorksite(ledger: Ledger, name: string) {
+export function matchingWorksites<T extends { name: string }>(worksites: readonly T[], name: string) {
   const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
   const key = normalize(name)
-  const matches = ledger.employers.filter(site => normalize(site.name) === key)
+  return worksites.filter(site => normalize(site.name) === key)
+}
+
+export function matchWorksite(ledger: Ledger, name: string) {
+  const matches = matchingWorksites(ledger.employers, name)
   return matches.length === 1 ? matches[0] : undefined
 }

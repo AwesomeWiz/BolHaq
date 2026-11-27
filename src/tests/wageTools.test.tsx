@@ -6,10 +6,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import App from '../App'
 import { exportBackup } from '../domain/backup'
 import { emptyLedger } from '../domain/ledger'
+import { languages } from '../locales'
 import { en } from '../locales/en'
 import { wageTools } from '../locales/wageTools'
 import { speechToText } from '../services/speech'
 import { ledgerStore } from '../services/storage'
+import { aggregateCommands } from './fixtures/aggregateCommands'
 import { reportLedger } from './fixtures/reportLedger'
 
 const enTools = wageTools('en-IN')
@@ -71,6 +73,26 @@ it('opens a named wage statement through the real recognition handler without wr
   expect(report.getByText('1 × ₹700', { exact: false })).toBeTruthy()
   expect(report.getByText('3 × ₹800', { exact: false })).toBeTruthy()
   expect(report.getByRole('button', { name: enTools.print })).toBeTruthy()
+  expect(confirm).not.toHaveBeenCalled()
+  expect(select).not.toHaveBeenCalled()
+})
+
+it.each(aggregateCommands)('opens the aggregate overview from a %s browser speech result for %s', async (locale, transcript) => {
+  localStorage.setItem('bolhaq-language', locale)
+  const { messages: t } = languages.find(language => language.code === locale)!
+  const browser = useRecognition()
+  const { user, confirm } = start()
+  const select = vi.spyOn(ledgerStore, 'select')
+  await user.click(await screen.findByRole('button', { name: t.tap }))
+  act(() => browser.current?.onresult?.({ results: [[{ transcript }]] }))
+
+  const overview = screen.getByRole('dialog', { name: wageTools(locale).overview })
+  expect(screen.getAllByRole('dialog')).toEqual([overview])
+  const balances = overview.querySelector('dl')
+  expect(balances?.textContent).toContain(t.outstanding)
+  expect(balances?.textContent).toContain('₹2,500')
+  expect(balances?.textContent).toContain(t.advance)
+  expect(balances?.textContent).toContain('₹500')
   expect(confirm).not.toHaveBeenCalled()
   expect(select).not.toHaveBeenCalled()
 })

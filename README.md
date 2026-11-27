@@ -37,7 +37,7 @@ The language selector controls labels, examples, feedback, formatting, the recog
 | Hindi | `hi-IN` | मुझे 2000 रुपये मिले। |
 | English | `en-IN` | I received 2000 rupees. |
 
-The deterministic parser handles the built-in examples, Arabic/Malayalam/Devanagari digits, common number words and selected mixed-language commands such as “ഇന്ന് work ചെയ്തു.” Open **What can I say?** for examples in the active language. Complete commands open a confirmation sheet with the recognized values already filled in. Edit the amount or workday count directly, or use **Edit details** for the date. An incomplete command keeps the recognized values and focuses the missing field.
+The deterministic interpreter handles the built-in examples, Arabic/Malayalam/Devanagari digits, common number words and selected mixed-language commands such as “ഇന്ന് work ചെയ്തു.” Open **What can I say?** for examples in the active language. Complete financial commands open a confirmation sheet with the extracted values already filled in. Edit the amount or workday count directly, or use **Edit details** for the date. An incomplete command keeps the values it understood and focuses the missing field.
 
 Recognition and playback use the browser’s Web Speech API. Support depends on the browser, microphone permission, available voices, language services and connectivity. Some browsers send microphone audio to their recognition service. BolHaq stores ledger entries in IndexedDB and does not store microphone audio or transcripts. The typed command field and quick actions remain available if speech recognition fails. Playback uses a matching language voice when one is available. [Web Speech API documentation](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API/Using_the_Web_Speech_API)
 
@@ -45,13 +45,52 @@ The timer starts when the recognition session starts listening. The coral wavefo
 
 For Malayalam playback, BolHaq primes the voice list and waits briefly for late-loaded voices. It prefers `ml-IN` and can use another Malayalam-tagged voice. The utterance uses `ml-IN` and says amounts with Malayalam currency words, such as “2200 രൂപ”. If a compatible voice is missing or playback fails, the written balance stays visible and BolHaq explains the issue in Malayalam. On-device pronunciation still needs verification. [Browser voice loading](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis/voiceschanged_event)
 
+## Natural-language commands
+
+| Intent | Example |
+| --- | --- |
+| Record work | Put down three days of work. |
+| Record payment | मुझे कल दो हजार रुपये मिले। |
+| Set daily wage | Change my daily pay to 800. |
+| Create worksite | Add Lake Road as a worksite at Rs 650 per day. |
+| Select worksite | Switch to Metro Works. |
+| Query worksite balance | How much is pending? |
+| Query total balance | എന്റെ ആകെ ബാക്കി കൂലി എത്ര? |
+| Generate wage report | Show my earnings for November. |
+| Prepare a payment reminder | Make a message asking for my wages. |
+
+The interpreter handles wage-ledger commands in English, Hindi, and Malayalam. Partial commands, such as “I received some money,” ask for the missing amount. Conflicting amounts or dates need review. If a named worksite is missing or has duplicate matches, choose the intended worksite. **Edit command** lets you correct recognized text and retry. Bare balance queries use the selected worksite. Aggregate phrasing such as “total pending wages” opens the overview, as do the existing aggregate aliases.
+
+Both typed and spoken input use `interpretIntent`. The speech adapter supplies the transcript. The interpreter keeps that text for display, normalizes a separate copy, detects command and safety cues, then extracts only supported fields. The app uses those fields to prepare the existing review dialog. Confirming a financial change still uses the ledger validator and writes integer paise through IndexedDB. An omitted date keeps the usual today default visible in review. Explicit dates that conflict or are invalid stay blank. A completed Hindi statement with **कल** is interpreted as yesterday. A clear statement that payment was not received gets a localized acknowledgement and leaves the ledger unchanged. Questions and uncertain statements can still prompt clarification. Expected or outgoing payments and commands containing multiple actions cannot stage a confirmed payment.
+
+To extend a concept, update the shared [normalization and date rules](src/domain/transcript.ts), [amount rules](src/domain/intentNumbers.ts), [read cues](src/domain/intentReads.ts), or [write slot rules](src/domain/intentWrites.ts). [Existing command forms](src/domain/intent.ts) and [report aliases](src/domain/reportCommands.ts) are used for compatibility. Add a new utterance and a nearby unsafe or ambiguous case to the development tests before expanding the allowed grammar. Keep the original held-out corpus fixed when comparing changes.
+
+### Intent benchmark
+
+```bash
+npm test -- src/tests/intentBenchmark.test.ts --disableConsoleIntercept
+```
+
+Set `BOLHAQ_BENCHMARK_BASELINE=1` to compare the TASK-002B compatibility rules with the same [frozen corpus](src/tests/fixtures/intentEvaluation.ts). Set `BOLHAQ_BENCHMARK_DEBUG=1` to list misses. The CLI prints correct and incorrect intent counts, unknown and clarification counts, results per language and intent, confirm-ready writes where the label calls for stopping, and warm mean interpretation time. Unknown and clarification can overlap when an unsafe command needs an explanation.
+
+| Evaluation slice | TASK-002B | TASK-002C |
+| --- | ---: | ---: |
+| English intent classification | 6/30 | 30/30 |
+| Hindi intent classification | 8/30 | 30/30 |
+| Malayalam intent classification | 7/30 | 30/30 |
+| Overall intent classification | 21/90 | 90/90 |
+| Understood among unambiguous supported paraphrases | 0/72 | 72/72 |
+| Unsafe confirm-ready writes in this corpus | 0 | 0 |
+
+The corpus deliberately uses paraphrases outside the original examples. It measures authored text, including imitations of speech variation. Separate tests cover the brief’s examples, extracted slots and the actual speech-result handler. One Malayalam reminder inflection was generalized after the first held-out run, which understood 71/72 supported utterances. These results do not establish recognition rates for live speech, dialects, noise, or other unseen requests. The interpreter runs offline without a model. Browser speech recognition may still use the browser vendor’s internet service.
+
 ## Statements, reminders and backups
 
 | Tool | English | Hindi | Malayalam |
 | --- | --- | --- | --- |
 | Wage statement | Show my wage statement for this month. | इस महीने का हिसाब दिखाओ। | ഈ മാസത്തെ കൂലിയുടെ കണക്ക് കാണിക്കൂ. |
 | Payment reminder | Prepare a payment reminder. | बाकी मजदूरी के लिए संदेश बनाओ। | ബാക്കി കൂലി ചോദിക്കാൻ ഒരു മെസേജ് തയ്യാറാക്കൂ. |
-| All worksites | Show my total outstanding wages. | सभी काम की जगहों का हिसाब दिखाओ। | എല്ലാ ജോലിസ്ഥലങ്ങളിലെയും കണക്ക് കാണിക്കൂ. |
+| All worksites | Show my total pending wages. | मेरी कुल बाकी मजदूरी कितनी है? | എന്റെ ആകെ ബാക്കി കൂലി എത്ര? |
 
 English also supports “Make a report for ABC Construction,” “Show my earnings for November,” and “Prepare a payment reminder for ABC Construction.” A month name without a year selects its most recent occurrence. If a spoken worksite name has zero or multiple matches, choose the intended worksite in the report. Opening a report leaves the active ledger worksite as selected.
 
@@ -129,7 +168,7 @@ Automated tests exercise the parser and ledger independently of a real microphon
 ## Known limitations
 
 - Recognition and playback depend on the browser and OS. Verify the updated recording controls and Malayalam pronunciation on the devices used for the demo.
-- The parser supports a finite set of commands and number phrases. Worksite naming through speech also depends on how the browser transcribes the name.
+- The interpreter is specific to BolHaq. Dialect, open-ended phrasing, unusual number words and misheard worksite names may require clarification or a typed correction. The authored benchmark gave no measured reason to add a local embedding model. Testing real Android utterances would establish whether such a model could help with classification.
 - A multi-day work entry stores a count under one reporting date. The duplicate rule applies to the reporting date per worksite.
 - The local guest ledger has no cross-device synchronization. The portable backup is plain JSON and restore replaces the ledger. Repeated payments on the same date are allowed because separate instalments can occur.
 - Native share, clipboard access and PDF export depend on the device. If sharing or programmatic copy is unavailable, BolHaq provides selectable text for manual copy.

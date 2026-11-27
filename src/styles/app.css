@@ -308,6 +308,10 @@ textarea { resize: vertical; }
 .close-button { padding: 0; color: var(--color-muted); }
 .dialog-employer { color: var(--color-muted); font-size: var(--type-label); margin-bottom: 10px; overflow-wrap: anywhere; }
 .dialog-employer strong { color: var(--color-ink); }
+.command-site-select {
+  min-height: 48px; width: 100%; padding: 8px 10px; background: var(--color-paper);
+  border: 1px solid var(--field-line); border-radius: var(--radius-control); color: var(--color-ink);
+}
 .dialog-transcript { display: grid; color: var(--color-ink); background: var(--color-canvas); padding: 8px 12px; border-radius: 8px; margin: 10px 0; overflow-wrap: anywhere; }
 .dialog-transcript span { color: var(--color-muted); font-size: var(--type-caption); }
 .confirmation-amount { display: grid; gap: 2px; padding: 10px 12px; margin-bottom: 8px; background: var(--selection); border-radius: var(--radius-control); }

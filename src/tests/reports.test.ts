@@ -2,6 +2,7 @@ import { expect, it } from 'vitest'
 import { intentParser } from '../domain/intent'
 import { matchWorksite, monthRange, resolvePeriod, wageStatement, worksiteOverview } from '../domain/reports'
 import { money } from '../locales'
+import { aggregateCommands } from './fixtures/aggregateCommands'
 import { reportLedger } from './fixtures/reportLedger'
 
 const range = { from: '2026-11-01', to: '2026-11-30' }
@@ -73,5 +74,39 @@ it.each([
 ])('recognizes the read-only report command %s', (transcript, parameters) => {
   expect(intentParser.parse(transcript, '2026-03-20')).toMatchObject({
     intent: 'OPEN_REPORT', parameters, transcript, missing: [], requiresConfirmation: false,
+  })
+})
+
+it.each(aggregateCommands)('opens a read-only aggregate summary in %s for %s', (_locale, transcript) => {
+  expect(intentParser.parse(transcript, '2026-03-20')).toMatchObject({
+    intent: 'OPEN_REPORT', parameters: { view: 'overview' }, transcript, requiresConfirmation: false,
+  })
+})
+
+it.each([
+  'How much am I old across all worksites?',
+  'Show all pending wages.',
+  'मेरी कुल बाकी मज़दूरी कितनी है?',
+  'सभी कार्यस्थलों का हिसाब दिखाओ।',
+  'എന്റെ आകെ ബാക്കി കൂലി എത്ര?',
+  'എന്\u200dറെ ആകെ ബാക്കി കൂലി എത്ര?',
+  'എൻറെ ആകെ ബാക്കി കൂലി എത്ര?',
+  'എനിക്ക് ആകെ എത്ര കൂലി കിട്ടാനുണ്ടു്?',
+])('recognizes a scoped transcription or spelling variant in %s', transcript => {
+  expect(intentParser.parse(transcript)).toMatchObject({
+    intent: 'OPEN_REPORT', parameters: { view: 'overview' }, requiresConfirmation: false,
+  })
+})
+
+it.each([
+  'How much am I owed?', 'Show my outstanding wages.',
+  'कितनी मज़दूरी बाकी है?', 'എനിക്ക് ഇനി എത്ര രൂപ കിട്ടാനുണ്ട്?',
+])('keeps %s scoped to the selected worksite', transcript => {
+  expect(intentParser.parse(transcript)).toMatchObject({ intent: 'QUERY_BALANCE', requiresConfirmation: false })
+})
+
+it('does not treat a combined aggregate query and payment as a supported command', () => {
+  expect(intentParser.parse('Show my total pending wages and record payment 300.')).toMatchObject({
+    intent: 'UNKNOWN', requiresConfirmation: false,
   })
 })

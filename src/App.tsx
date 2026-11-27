@@ -7,12 +7,13 @@ import { VoiceGuide } from './components/VoiceGuide'
 import { VoicePanel } from './components/VoicePanel'
 import { ToolDialog } from './components/ToolDialog'
 import { WageReports } from './components/WageReports'
+import { WorksiteChoice } from './components/WorksiteChoice'
 import type { ReportView } from './components/WageReports'
 import type { VoiceFeedback } from './components/VoicePanel'
 import { LedgerError, totals, validateProposal } from './domain/ledger'
 import type { Ledger } from './domain/ledger'
-import { intentParser } from './domain/intent'
-import { matchWorksite } from './domain/reports'
+import { interpretIntent } from './domain/interpretIntent'
+import type { InterpretationIssue } from './domain/interpretIntent'
 import { draftFromIntent, newDraft, reviewDraft, withInlineEdits } from './features/proposals'
 import type { Draft, Editor } from './features/proposals'
 import { languages, money } from './locales'
@@ -37,6 +38,11 @@ function shouldShowGuide(ledger: Ledger) {
 }
 
 type ToolView = ReportView | { view: 'backup' }
+type SiteRequest = { scope: 'select' | 'balance'; siteId?: string; message?: keyof Messages; transcript?: string }
+const clarification: Record<InterpretationIssue, keyof Messages> = {
+  amount: 'clarifyAmount', details: 'clarify', worksite: 'clarifyWorksite',
+  worksiteAmbiguous: 'clarifyDuplicateWorksite', paymentState: 'clarifyPaymentState', oneAction: 'clarifyOneAction',
+}
 
 export default function App() {
   const [locale, setLocale] = useState(preferredLocale)
@@ -44,6 +50,8 @@ export default function App() {
   const [loadingFailed, setLoadingFailed] = useState(false)
   const [editor, setEditor] = useState<Editor | null>(null)
   const [tool, setTool] = useState<ToolView>()
+  const [siteRequest, setSiteRequest] = useState<SiteRequest>()
+  const [commandEdit, setCommandEdit] = useState({ text: '', version: 0 })
   const [guide, setGuide] = useState(false)
   const [feedback, setFeedback] = useState<VoiceFeedback>({ status: 'idle' })
   const [saving, setSaving] = useState(false)
@@ -155,15 +163,17 @@ export default function App() {
     }
   }
 
-  function speakBalance(transcript?: string, explicit = false) {
-    if (!ledger?.activeId) {
+  function speakBalance(transcript?: string, explicit = false, worksiteId?: string) {
+    const site = ledger?.employers.find(employer => employer.id === (worksiteId ?? ledger.activeId))
+    if (!ledger || !site) {
       setFeedback({ status: 'error', message: 'chooseEmployer', transcript })
       return
     }
-    const { balance } = totals(ledger, ledger.activeId)
+    const { balance } = totals(ledger, site.id)
     const template = balance === 0 ? t.settledReply : balance < 0 ? t.advanceReply : t.balanceReply
-    const reply = template.replace('{amount}', money(Math.abs(balance), locale))
-    const narration = template.replace('{amount}', spokenMoney(Math.abs(balance), locale))
+    const label = worksiteId ? `${site.name} · ` : ''
+    const reply = label + template.replace('{amount}', money(Math.abs(balance), locale))
+    const narration = label + template.replace('{amount}', spokenMoney(Math.abs(balance), locale))
     const version = ++playbackVersion.current
     if (explicit) {
       setFeedback({ status: 'idle' })
@@ -181,33 +191,53 @@ export default function App() {
 
   function handleCommand(command: string, source: 'typed' | 'speech') {
     if (!ledger || lock.current) return
-    const parsed = intentParser.parse(command)
-    const transcript = source === 'speech' ? parsed.transcript : undefined
-    if (parsed.intent === 'QUERY_BALANCE') {
-      speakBalance(transcript)
+    const parsed = interpretIntent(command, { worksites: ledger.employers, activeWorksiteId: ledger.activeId })
+    const transcript = source === 'speech' ? parsed.original : undefined
+    const message = parsed.issue && clarification[parsed.issue]
+    const reference = 'reference' in parsed ? parsed.reference : undefined
+    if (parsed.intent === 'PAYMENT_NOT_RECEIVED') {
+      setFeedback({ status: 'idle', message: 'paymentNotReceived', transcript })
       return
     }
-    if (parsed.intent === 'OPEN_REPORT') {
-      const { view, month } = parsed.parameters
-      const name = 'worksiteName' in parsed.parameters ? parsed.parameters.worksiteName : undefined
-      const siteId = name ? matchWorksite(ledger, name)?.id : ledger.activeId ?? undefined
-      openTool({ view, siteId, period: month ? { kind: 'month', month } : undefined }, transcript)
+    if (parsed.intent === 'UNKNOWN') {
+      setFeedback({ status: 'error', message: message ?? 'unknown', transcript, editableCommand: parsed.original })
+      return
+    }
+    if (parsed.intent === 'SELECT_WORKSITE' || parsed.intent === 'QUERY_WORKSITE_BALANCE') {
+      const selecting = parsed.intent === 'SELECT_WORKSITE'
+      if (!selecting && parsed.worksiteId) speakBalance(transcript, false, reference ? parsed.worksiteId : undefined)
+      else if (ledger.employers.length) {
+        cancelSpeech()
+        setFeedback({ status: 'idle', transcript })
+        setSiteRequest({ scope: selecting ? 'select' : 'balance', siteId: parsed.worksiteId, message, transcript })
+      } else setFeedback({ status: 'error', message: 'chooseEmployer', transcript, editableCommand: parsed.original })
+      return
+    }
+    if (parsed.intent === 'QUERY_TOTAL_BALANCE' || parsed.intent === 'GENERATE_WAGE_REPORT' ||
+        parsed.intent === 'PREPARE_PAYMENT_REMINDER') {
+      const view = parsed.intent === 'QUERY_TOTAL_BALANCE' ? 'overview' :
+        parsed.intent === 'GENERATE_WAGE_REPORT' ? 'statement' : 'reminder'
+      const { month } = parsed.parameters
+      openTool({ view, siteId: parsed.worksiteId, period: month ? { kind: 'month', month } : undefined }, transcript)
       return
     }
     const draft = draftFromIntent(parsed, ledger)
-    if (!draft) {
-      setFeedback({ status: 'error', message: 'unknown', transcript })
+    if (!draft) return
+    if (draft.kind !== 'employer' && !ledger.employers.length) {
+      setFeedback({ status: 'error', message: 'chooseEmployer', transcript, editableCommand: parsed.original })
       return
     }
-    if (draft.kind !== 'employer' && !draft.employerId) {
-      setFeedback({ status: 'error', message: 'chooseEmployer', transcript })
-      return
-    }
-    const next: Editor = parsed.missing.length || parsed.ambiguity
-      ? { draft, stage: 'edit', error: 'clarify', missing: parsed.missing }
+    const next: Editor = parsed.status === 'missing' || parsed.status === 'ambiguous'
+      ? { draft, stage: 'edit', error: message ?? 'clarify', missing: parsed.missing, chooseWorksite: parsed.missing.includes('worksite') }
       : reviewDraft(draft, ledger)
     setEditor(next)
-    setFeedback({ status: 'awaiting', transcript })
+    setFeedback({ status: 'awaiting', transcript, editableCommand: parsed.original })
+  }
+
+  function editCommand(text: string) {
+    setEditor(null)
+    setFeedback({ status: 'idle' })
+    setCommandEdit(previous => ({ text, version: previous.version + 1 }))
   }
 
   function toggleMicrophone() {
@@ -291,7 +321,8 @@ export default function App() {
           void ledgerStore.read().then(data => { setLedger(data); setGuide(shouldShowGuide(data)) }, () => setLoadingFailed(true))
         }}>{t.retry}</button>}
       </div>}
-      <VoicePanel t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
+      <VoicePanel key={commandEdit.version} initialCommand={commandEdit.text} onEditCommand={editCommand}
+        t={t} examples={language.examples} feedback={feedback} ready={Boolean(ledger) && !saving}
         available={speechToText.available()} onMic={toggleMicrophone}
         onCancel={() => { cancelSpeech(); setFeedback({ status: 'idle' }) }}
         onCommand={command => handleCommand(command, 'typed')} />
@@ -322,7 +353,9 @@ export default function App() {
       </section>}
       <LocalFooter t={t} />
     </main>
-    <EntryDialog editor={editor} t={t} locale={locale} employerName={employerName} transcript={feedback.transcript} saving={saving}
+    <EntryDialog editor={editor} t={t} locale={locale} employerName={employerName} employers={ledger?.employers ?? []}
+      transcript={feedback.transcript} saving={saving}
+      onRetry={feedback.editableCommand ? () => editCommand(feedback.editableCommand!) : undefined}
       onChange={patch => setEditor(previous => previous && { ...previous, draft: { ...previous.draft, ...patch }, error: undefined })}
       onReview={replace => {
         if (!editor || !ledger) return
@@ -333,6 +366,16 @@ export default function App() {
         draft: previous.draft, stage: 'edit', existing: previous.stage === 'review' ? previous.existing : undefined,
       })}
       onClose={closeEditor} onConfirm={() => void confirm()} />
+    {siteRequest && ledger && <ToolDialog title={siteRequest.scope === 'select' ? t.switchWorksite : t.worksite}
+      closeLabel={t.closeDialog} onClose={() => setSiteRequest(undefined)}>
+      <WorksiteChoice scope={siteRequest.scope} siteId={siteRequest.siteId}
+        message={siteRequest.message && t[siteRequest.message]} employers={ledger.employers} locale={locale} t={t}
+        onCancel={() => setSiteRequest(undefined)} onChoose={id => {
+          setSiteRequest(undefined)
+          if (siteRequest.scope === 'select') void selectEmployer(id)
+          else speakBalance(siteRequest.transcript, false, id)
+        }} />
+    </ToolDialog>}
     {tool && ledger && <ToolDialog title={w[tool.view]} closeLabel={t.closeDialog} busy={saving} onClose={() => setTool(undefined)}>
       {tool.view === 'backup' ? <BackupPanel locale={locale} t={t} w={w} saving={saving}
         onRead={ledgerStore.read} onRestore={restoreBackup} /> :

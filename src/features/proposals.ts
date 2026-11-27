@@ -1,6 +1,6 @@
 import { currentAgreement, LedgerError, localDate, normalizeDigits, readPaise, validateProposal, workOn } from '../domain/ledger'
 import type { Ledger, Proposal, WorkEntry } from '../domain/ledger'
-import type { ParsedIntent } from '../domain/intent'
+import type { Interpretation, MissingSlot } from '../domain/interpretIntent'
 import type { Messages } from '../locales/en'
 
 export type Draft = {
@@ -13,7 +13,8 @@ export type Editor = {
   stage: 'edit' | 'conflict' | 'review'
   proposal?: Proposal
   existing?: WorkEntry
-  missing?: ParsedIntent['missing']
+  missing?: MissingSlot[]
+  chooseWorksite?: boolean
   error?: keyof Messages
 }
 
@@ -34,12 +35,14 @@ export function newDraft(kind: Draft['kind'], ledger: Ledger): Draft {
   }
 }
 
-export function draftFromIntent(parsed: ParsedIntent, ledger: Ledger): Draft | null {
+export function draftFromIntent(parsed: Interpretation, ledger: Ledger): Draft | null {
   switch (parsed.intent) {
-    case 'CREATE_EMPLOYER': return { ...newDraft('employer', ledger), name: parsed.parameters.name, rate: asRupees(parsed.parameters.rate) }
-    case 'SET_DAILY_WAGE': return { ...newDraft('wage', ledger), rate: asRupees(parsed.parameters.rate) }
-    case 'RECORD_WORK': return { ...newDraft('work', ledger), date: parsed.parameters.date ?? '', days: String(parsed.parameters.days ?? '') }
-    case 'RECORD_PAYMENT': return { ...newDraft('payment', ledger), amount: asRupees(parsed.parameters.amount) }
+    case 'CREATE_WORKSITE': return { ...newDraft('employer', ledger), name: parsed.parameters.name, rate: asRupees(parsed.parameters.rate) }
+    case 'SET_DAILY_WAGE': return { ...newDraft('wage', ledger), employerId: parsed.worksiteId, rate: asRupees(parsed.parameters.rate) }
+    case 'RECORD_WORK': return { ...newDraft('work', ledger), employerId: parsed.worksiteId,
+      date: parsed.parameters.date === null ? '' : parsed.parameters.date ?? localDate(), days: String(parsed.parameters.days ?? '') }
+    case 'RECORD_PAYMENT': return { ...newDraft('payment', ledger), employerId: parsed.worksiteId,
+      date: parsed.parameters.date === null ? '' : parsed.parameters.date ?? localDate(), amount: asRupees(parsed.parameters.amount) }
     default: return null
   }
 }
