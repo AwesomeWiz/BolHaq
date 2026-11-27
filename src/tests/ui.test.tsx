@@ -8,6 +8,7 @@ import { LanguagePicker } from '../components/LanguagePicker'
 import { TransactionList, WageBalance } from '../components/LedgerPanels'
 import { applyConfirmed, emptyLedger, localDate } from '../domain/ledger'
 import type { Ledger, Proposal } from '../domain/ledger'
+import { dateLabel } from '../locales'
 import { en } from '../locales/en'
 import { speechToText } from '../services/speech'
 import { ledgerStore } from '../services/storage'
@@ -67,6 +68,29 @@ describe('confirmation and recording UI', () => {
     await user.click(within(dialog).getByRole('button', { name: en.confirm }))
     expect(ledger.payments.map(entry => entry.amount)).toEqual([200_000])
     expect(await screen.findByText(en.success)).toBeTruthy()
+  })
+
+  it.each([
+    ['I received Rs 300', '300'],
+    ['मुझे आईएनआर 2000 मिले', '2000'],
+    ['എനിക്ക് ആയിരം രൂപ കിട്ടി', '1000'],
+  ])('prefills the editable payment from recognition of %s and cancels safely', async (transcript, value) => {
+    const user = await start()
+    const dialog = await speak(user, transcript)
+    const amount = within(dialog).getByRole<HTMLInputElement>('textbox', { name: en.amount })
+    expect(amount.value).toBe(value)
+    expect(within(dialog).getByText(site.name)).toBeTruthy()
+    expect(within(dialog).getByText(dateLabel(localDate(), 'en-IN'))).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: en.confirm })).toBeTruthy()
+    expect(ledgerStore.confirm).not.toHaveBeenCalled()
+
+    await user.clear(amount)
+    await user.type(amount, '1500')
+    expect(within(dialog).getByText('₹1,500')).toBeTruthy()
+    await user.click(within(dialog).getByRole('button', { name: en.cancel }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(ledgerStore.confirm).not.toHaveBeenCalled()
+    expect(ledger.payments).toEqual([])
   })
 
   it('prefills the daily wage and commits the edited pending amount', async () => {
