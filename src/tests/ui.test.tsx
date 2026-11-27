@@ -8,7 +8,7 @@ import { LanguagePicker } from '../components/LanguagePicker'
 import { TransactionList, WageBalance } from '../components/LedgerPanels'
 import { applyConfirmed, emptyLedger, localDate } from '../domain/ledger'
 import type { Ledger, Proposal } from '../domain/ledger'
-import { dateLabel } from '../locales'
+import { dateLabel, languages } from '../locales'
 import { en } from '../locales/en'
 import { speechToText } from '../services/speech'
 import { ledgerStore } from '../services/storage'
@@ -17,6 +17,52 @@ const site: Proposal = { kind: 'employer', id: 'site', name: 'ABC Construction',
 const work: Proposal = { kind: 'work', id: 'work', employerId: site.id, agreementId: site.id, days: 6, rate: 70_000, date: localDate() }
 const payment: Proposal = { kind: 'payment', id: 'payment', employerId: site.id, amount: 200_000, date: localDate() }
 const initial = () => applyConfirmed(emptyLedger(), site, site.id)
+
+beforeEach(() => {
+  if (!HTMLDialogElement.prototype.showModal) {
+    HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
+    HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
+  }
+})
+
+it.each([
+  ['en-IN', 'I received Rs 300', '300'],
+  ['hi-IN', 'मुझे आईएनआर 2000 मिले', '2000'],
+  ['hi-IN', 'मुझे आईएस 2000 मिले', '2000'],
+  ['ml-IN', 'എനിക്ക് ആയിരം രൂപ കിട്ടി', '1000'],
+] as const)('prefills the editable input through the %s browser recognition adapter for %s', async (locale, transcript, value) => {
+  const t = languages.find(language => language.code === locale)!.messages
+  localStorage.setItem('bolhaq-language', locale)
+  vi.spyOn(ledgerStore, 'read').mockResolvedValue(initial())
+  const confirm = vi.spyOn(ledgerStore, 'confirm')
+  class BrowserRecognition {
+    static current: BrowserRecognition | undefined
+    lang = ''
+    onstart?: () => void
+    onresult?: (event: { results: Array<Array<{ transcript: string }> & { isFinal: boolean }> }) => void
+    start() { BrowserRecognition.current = this; this.onstart?.() }
+    abort() { BrowserRecognition.current = undefined }
+  }
+  vi.stubGlobal('SpeechRecognition', BrowserRecognition)
+  const user = userEvent.setup()
+  render(<App />)
+  await screen.findByRole('button', { name: t.speakBalance })
+  await user.click(screen.getByRole('button', { name: t.tap }))
+  const recognition = BrowserRecognition.current
+  expect(recognition?.lang).toBe(locale)
+  const result = Object.assign([{ transcript }], { isFinal: true })
+  act(() => recognition?.onresult?.({ results: [result] }))
+
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByRole<HTMLInputElement>('textbox', { name: t.amount }).value).toBe(value)
+  expect(dialog.getByText(transcript)).toBeTruthy()
+  expect(dialog.getByText(site.name)).toBeTruthy()
+  expect(dialog.getByText(dateLabel(localDate(), locale))).toBeTruthy()
+  expect(dialog.getByRole('button', { name: t.confirm })).toBeTruthy()
+  await user.click(dialog.getByRole('button', { name: t.cancel }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(confirm).not.toHaveBeenCalled()
+})
 
 describe('confirmation and recording UI', () => {
   let ledger: Ledger
@@ -39,10 +85,6 @@ describe('confirmation and recording UI', () => {
       callbacks = handlers
       return { stop, cancel }
     })
-    if (!HTMLDialogElement.prototype.showModal) {
-      HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
-      HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
-    }
   })
 
   async function start() {
@@ -229,4 +271,5 @@ it('distinguishes settled and advance balances in text', () => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })

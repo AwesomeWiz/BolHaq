@@ -76,6 +76,8 @@ it.each([
   ['I received rupee 300', 30_000],
   ['I received 300 ₹', 30_000],
   ['मुझे आईएनआर 2000 मिले', 200_000],
+  ['मुझे आईएस 2000 मिले', 200_000],
+  ['मुझे आई एस २,००० मिले।', 200_000],
   ['मुझे INR 2000 मिले', 200_000],
   ['मुझे 2000 रुपये मिले', 200_000],
   ['मुझे ₹2000 मिले', 200_000],
@@ -103,6 +105,7 @@ it.each(['I received', 'मुझे मिले', 'എനിക്ക് ക�
 it.each([
   'I received Rs. -300', 'I received INR 0', 'I received Rs .50', 'I received INR 1,2',
   'I received Rs 300 or INR 500', 'मुझे आईएनआर 2000 या 3000 मिले',
+  'मुझे आईएस 2000 या 3000 मिले', 'मुझे आईएस 2000 ईंटें मिले',
   'I received 2026-11-27', 'I received on 27/11/2026', 'I received from Site 300',
   'I received Rs 300 from Site 7',
 ])('does not prefill from invalid, ambiguous or unrelated numbers in %s', input => {
@@ -113,6 +116,7 @@ it.each([
 it('keeps daily wage and unrelated utterances separate from payments', () => {
   expect(parse('My daily wage is Rs 300')).toMatchObject({ intent: 'SET_DAILY_WAGE', parameters: { rate: 30_000 } })
   expect(parse('मेरी दिहाड़ी आई एन आर 2000 है।')).toMatchObject({ intent: 'SET_DAILY_WAGE', parameters: { rate: 200_000 } })
+  expect(parse('मेरी दिहाड़ी आईएस 2000 है।')).toMatchObject({ intent: 'SET_DAILY_WAGE', parameters: { rate: null } })
   expect(parse('Site 300 on 2026-11-27')).toMatchObject({ intent: 'UNKNOWN', requiresConfirmation: false })
   expect(parse('मुझे 2000 ईंटें मिलीं')).toMatchObject({ intent: 'UNKNOWN', requiresConfirmation: false })
 })
