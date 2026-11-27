@@ -8,6 +8,7 @@ export type VoiceFeedback = {
   message?: keyof Messages
   reply?: string
   transcript?: string
+  editableCommand?: string
   startedAt?: number
   sound?: boolean
 }
@@ -40,13 +41,15 @@ function RecordingClock({ startedAt }: { startedAt: number }) {
   return <time className="recording-clock" dateTime={`PT${seconds}S`}>{time}</time>
 }
 
-export function VoicePanel({ t, examples, feedback, ready, available, onMic, onCancel, onCommand }: {
+export function VoicePanel({ t, examples, feedback, ready, available, initialCommand = '', onMic, onCancel, onCommand, onEditCommand }: {
   t: Messages; examples: readonly string[]; feedback: VoiceFeedback; ready: boolean; available: boolean
+  initialCommand?: string
   onMic(): void; onCancel(): void; onCommand(command: string): void
+  onEditCommand(command: string): void
 }) {
-  const [typed, setTyped] = useState(false)
+  const [typed, setTyped] = useState(Boolean(initialCommand))
   const [help, setHelp] = useState(false)
-  const [command, setCommand] = useState('')
+  const [command, setCommand] = useState(initialCommand)
   const input = useRef<HTMLInputElement>(null)
   const { status, transcript, startedAt, sound, reply } = feedback
   const listening = status === 'listening'
@@ -58,7 +61,11 @@ export function VoicePanel({ t, examples, feedback, ready, available, onMic, onC
       (reply || status === 'success' || status === 'awaiting' ? t[status] : '')
   const Icon = listening ? Square : busy ? LoaderCircle : Mic
 
-  useEffect(() => { if (typed && !busy) input.current?.focus() }, [typed, busy])
+  useEffect(() => {
+    if (!typed || busy) return
+    const frame = requestAnimationFrame(() => input.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [typed, busy])
 
   return <section className="voice-panel" aria-labelledby="voice-title" data-state={status} data-sound={sound || undefined}>
     <div className="voice-copy">
@@ -93,6 +100,8 @@ export function VoicePanel({ t, examples, feedback, ready, available, onMic, onC
     </div>
     {busy ? <button type="button" className="button voice-secondary" onClick={onCancel}>{t.cancel}</button> :
       <div className="voice-alternatives">
+        {status === 'error' && feedback.editableCommand && <button type="button" className="button voice-secondary"
+          onClick={() => onEditCommand(feedback.editableCommand!)}>{t.editCommand}</button>}
         <button className="button voice-secondary" type="button" aria-expanded={typed} aria-controls="typed-command"
           onClick={() => { setTyped(!typed); setHelp(false) }}><Keyboard size={18} aria-hidden="true" />{t.type}</button>
         <button className="button voice-secondary" type="button" aria-expanded={help} aria-controls="voice-examples"

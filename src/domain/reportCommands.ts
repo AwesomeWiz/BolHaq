@@ -4,6 +4,13 @@ export type ReportRequest =
 
 const months = 'january february march april may june july august september october november december'.split(' ')
 
+export function monthForName(name: string, today: string) {
+  const number = months.indexOf(name.toLowerCase()) + 1
+  if (!number) return
+  const year = Number(today.slice(0, 4)) - Number(number > Number(today.slice(5, 7)))
+  return `${year}-${String(number).padStart(2, '0')}`
+}
+
 function isAggregateBalance(command: string) {
   const english = /^(?:show (?:my )?(?:total|all) (?:pending|unpaid|outstanding) wages|how much payment is pending|how much am i (?:owed|old) across all worksites)$/i
   const hindi = /^(?:मेरी कुल (?:बाकी|बकाया) मज़?दूरी (?:कितनी है|बताओ)|कुल कितनी मज़?दूरी (?:बाकी|बकाया) है|मुझे कुल कितने पैसे मिलने बाकी हैं|सभी (?:काम की जगहों|कार्यस्थलों) का हिसाब दिखाओ)$/u
@@ -25,11 +32,8 @@ export function reportCommand(command: string, today: string): ReportRequest | u
 
   const month = /^show my (?:earnings|wage statement) for (\w+)$/i.exec(command)
   if (month) {
-    const number = months.indexOf(month[1].toLowerCase()) + 1
-    if (number) {
-      const year = Number(today.slice(0, 4)) - Number(number > Number(today.slice(5, 7)))
-      return { view: 'statement', month: `${year}-${String(number).padStart(2, '0')}` }
-    }
+    const value = monthForName(month[1], today)
+    if (value) return { view: 'statement', month: value }
   }
 
   if (/^(?:prepare a payment reminder|बाकी मज[़]?दूरी के लिए संदेश बनाओ|ബാക്കി കൂലി ചോദിക്കാൻ ഒരു മെസേജ് തയ്യാറാക്കൂ)$/iu.test(command)) {

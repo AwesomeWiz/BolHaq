@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { localDate } from '../domain/ledger'
+import type { Employer } from '../domain/ledger'
 import { withInlineEdits } from '../features/proposals'
 import type { Draft, Editor } from '../features/proposals'
 import { dateLabel, money } from '../locales'
 import type { Locale } from '../locales'
 import type { Messages } from '../locales/en'
+import { WorksiteSelect } from './WorksiteChoice'
 
 type Field = Exclude<keyof Draft, 'kind' | 'employerId'>
 const fields: Record<Draft['kind'], Field[]> = {
@@ -33,9 +35,11 @@ function EntryField({ draft, field, t, reviewing, onChange }: {
   </label>
 }
 
-export function EntryDialog({ editor, t, locale, employerName, transcript, saving, onChange, onReview, onEdit, onConfirm, onClose }: {
+export function EntryDialog({ editor, t, locale, employerName, employers, transcript, saving, onChange, onReview, onEdit, onConfirm, onClose, onRetry }: {
   editor: Editor | null; t: Messages; locale: Locale; employerName: string; saving: boolean
+  employers: readonly Employer[]
   transcript?: string
+  onRetry?(): void
   onChange(patch: Partial<Draft>): void
   onReview(replace?: boolean): void
   onEdit(): void
@@ -91,6 +95,7 @@ export function EntryDialog({ editor, t, locale, employerName, transcript, savin
     proposal?.kind === 'payment' ? proposal.amount : proposal?.rate
   const canEditDetails = draft?.kind !== 'wage'
   const blocked = saving || closing
+  const chooseWorksite = editor?.stage === 'edit' && editor.chooseWorksite
   const selectedFields = draft && (reviewing ? fields[draft.kind].filter(field => field !== 'date' && field !== 'description') : fields[draft.kind])
   const amountLabel = proposal?.kind === 'work' ? t.earned : proposal?.kind === 'payment' ? t.paymentEntry : t.wage
 
@@ -108,7 +113,7 @@ export function EntryDialog({ editor, t, locale, employerName, transcript, savin
       {reviewing && <div className="confirmation-amount">
         <span>{amountLabel}</span><strong className="confirmation-value">{displayAmount ? money(displayAmount, locale) : '—'}</strong>
       </div>}
-      {draft.kind !== 'employer' && <p className="dialog-employer">{t.worksite} · <strong>{employerName}</strong></p>}
+      {draft.kind !== 'employer' && !chooseWorksite && <p className="dialog-employer">{t.worksite} · <strong>{employerName}</strong></p>}
       {editor.error && <p className="notice error" role="alert">{t[editor.error]}</p>}
       {editor.stage === 'conflict' && editor.existing && <>
         <dl className="review-details">
@@ -134,12 +139,15 @@ export function EntryDialog({ editor, t, locale, employerName, transcript, savin
           {proposal.kind === 'employer' && <div><dt>{t.description}</dt><dd>{proposal.description}</dd></div>}
         </dl>}
         <fieldset className="entry-fields" disabled={blocked}>
+          {chooseWorksite && <WorksiteSelect employers={employers} locale={locale} t={t} value={draft.employerId}
+            onChange={employerId => onChange({ employerId: employerId || undefined })} />}
           {selectedFields?.map(field => <EntryField key={field} draft={draft} field={field} t={t} reviewing={reviewing} onChange={onChange} />)}
         </fieldset>
         {draft.kind === 'wage' && <p className="muted">{t.wageHint}</p>}
         {transcript && <p className="dialog-transcript"><span>{t.heard}</span>{transcript}</p>}
         <div className="dialog-actions">
           <button className="button" type="button" disabled={blocked} onClick={closeSheet}>{t.cancel}</button>
+          {!reviewing && onRetry && <button className="button" type="button" disabled={blocked} onClick={onRetry}>{t.editCommand}</button>}
           {reviewing ? <>
             {canEditDetails && <button className="button" type="button" disabled={blocked} onClick={onEdit}>{t.editDetails}</button>}
             <button className="button primary" type="button" disabled={blocked}
