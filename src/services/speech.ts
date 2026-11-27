@@ -6,6 +6,11 @@ interface Recognition {
   continuous: boolean
   interimResults: boolean
   maxAlternatives: number
+  onstart: (() => void) | null
+  onaudiostart: (() => void) | null
+  onaudioend: (() => void) | null
+  onsoundstart: (() => void) | null
+  onsoundend: (() => void) | null
   onspeechend: (() => void) | null
   onend: (() => void) | null
   onerror: ((event: { error: string }) => void) | null
@@ -22,14 +27,12 @@ type RecognitionWindow = Window & {
 export interface SpeechToTextProvider {
   available(): boolean
   listen(locale: Locale, callbacks: {
+    started(): void
+    sound(active: boolean): void
     processing(): void
     recognized(transcript: string): void
     failed(issue: SpeechIssue): void
   }): { stop(): void; cancel(): void }
-}
-export interface TextToSpeechProvider {
-  speak(text: string, locale: Locale): boolean
-  cancel(): void
 }
 
 function recognitionConstructor() {
@@ -43,6 +46,20 @@ export const speechToText: SpeechToTextProvider = {
     let session: Recognition | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
     let finished = false
+    let phase: 'starting' | 'listening' | 'processing' = 'starting'
+    const started = () => {
+      if (finished || phase !== 'starting') return
+      phase = 'listening'
+      callbacks.started()
+    }
+    const processing = () => {
+      if (finished || phase === 'processing') return
+      phase = 'processing'
+      callbacks.processing()
+    }
+    const sound = (active: boolean) => {
+      if (!finished && phase === 'listening') callbacks.sound(active)
+    }
     const finish = () => {
       if (finished) return false
       finished = true
@@ -59,7 +76,7 @@ export const speechToText: SpeechToTextProvider = {
     }
     const stop = () => {
       if (finished || !session) return
-      callbacks.processing()
+      processing()
       try { session.stop() } catch { fail('speechError') }
     }
     const cancel = () => {
@@ -76,7 +93,12 @@ export const speechToText: SpeechToTextProvider = {
       session.continuous = false
       session.interimResults = false
       session.maxAlternatives = 1
-      session.onspeechend = () => { if (!finished) callbacks.processing() }
+      session.onstart = started
+      session.onaudiostart = started
+      session.onsoundstart = () => sound(true)
+      session.onsoundend = () => sound(false)
+      session.onspeechend = processing
+      session.onaudioend = processing
       session.onresult = event => {
         const transcript = event.results[0]?.[0]?.transcript.trim()
         if (!transcript) fail('emptySpeech')
@@ -97,23 +119,4 @@ export const speechToText: SpeechToTextProvider = {
     }
     return { stop, cancel }
   },
-}
-
-export const textToSpeech: TextToSpeechProvider = {
-  speak(text, locale) {
-    const synthesis = window.speechSynthesis
-    if (!synthesis || typeof SpeechSynthesisUtterance === 'undefined') return false
-    const voices = synthesis.getVoices()
-    const language = locale.toLowerCase()
-    const voice = voices.find(item => item.lang.toLowerCase() === language) ??
-      voices.find(item => item.lang.toLowerCase().split(/[-_]/)[0] === language.split('-')[0])
-    if (!voice) return false
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.voice = voice
-    utterance.lang = voice.lang
-    synthesis.cancel()
-    synthesis.speak(utterance)
-    return true
-  },
-  cancel: () => window.speechSynthesis?.cancel(),
 }

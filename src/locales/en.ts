@@ -1,4 +1,10 @@
 export const en = {
+  "starting": "Opening microphone…",
+  "settled": "Fully settled",
+  "reading": "Reading balance…",
+  "playbackError": "The browser couldn’t read the balance aloud. You can still see it here.",
+  "editDetails": "Edit details",
+  "closeDialog": "Close entry",
   "tagline": "Your wages. Your language.",
   "language": "Language",
   "ledger": "My wage ledger",
